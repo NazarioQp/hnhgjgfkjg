@@ -1,15 +1,22 @@
 import os
 import secrets
 import string
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, Column, String, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+# ================== CONFIG ==================
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
+
+# ================== DATABASE ==================
+
 engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
+SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 class License(Base):
@@ -21,7 +28,11 @@ class License(Base):
 
 Base.metadata.create_all(engine)
 
-app = FastAPI()
+# ================== APP ==================
+
+app = FastAPI(title="StaffHelp License Server")
+
+# ================== UTILS ==================
 
 def generate_key():
     alphabet = string.ascii_uppercase + string.digits
@@ -30,12 +41,21 @@ def generate_key():
         for _ in range(3)
     )
 
+# ================== ROUTES ==================
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
 @app.post("/verify")
 def verify(data: dict):
     key = data.get("key")
     hwid = data.get("hwid")
 
-    db = Session()
+    if not key or not hwid:
+        raise HTTPException(status_code=400, detail="key and hwid required")
+
+    db = SessionLocal()
     lic = db.query(License).filter_by(key=key).first()
 
     if not lic or not lic.active:
@@ -55,33 +75,49 @@ def verify(data: dict):
     db.close()
     return {"status": "ok"}
 
+# ================== ADMIN ==================
+
 @app.post("/admin/genkey")
 def genkey():
-    db = Session()
+    db = SessionLocal()
+
     key = generate_key()
     db.add(License(key=key))
     db.commit()
     db.close()
+
     return {"key": key}
 
 @app.post("/admin/revoke")
 def revoke(data: dict):
     key = data.get("key")
 
-    db = Session()
+    if not key:
+        raise HTTPException(status_code=400, detail="key required")
+
+    db = SessionLocal()
     lic = db.query(License).filter_by(key=key).first()
+
     if not lic:
         db.close()
-        return JSONResponse({"error": "not found"}, status_code=404)
+        raise HTTPException(status_code=404, detail="not found")
 
     db.delete(lic)
     db.commit()
     db.close()
+
     return {"status": "deleted"}
 
 @app.get("/admin/list")
 def list_keys():
-    db = Session()
-    data = [{"key": l.key, "hwid": l.hwid} for l in db.query(License).all()]
+    db = SessionLocal()
+    result = [
+        {
+            "key": l.key,
+            "hwid": l.hwid,
+            "active": l.active
+        }
+        for l in db.query(License).all()
+    ]
     db.close()
-    return data
+    return result
