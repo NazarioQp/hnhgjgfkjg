@@ -6,14 +6,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, Column, String, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# ================== CONFIG ==================
+# ================= CONFIG =================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
-# ================== DATABASE ==================
+# ================= DATABASE =================
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
@@ -24,15 +23,16 @@ class License(Base):
 
     key = Column(String, primary_key=True)
     hwid = Column(String, nullable=True)
+    mc_nick = Column(String, nullable=True)   # 👤 ник первого запуска
     active = Column(Boolean, default=True)
 
 Base.metadata.create_all(engine)
 
-# ================== APP ==================
+# ================= APP =================
 
 app = FastAPI(title="StaffHelp License Server")
 
-# ================== UTILS ==================
+# ================= UTILS =================
 
 def generate_key():
     alphabet = string.ascii_uppercase + string.digits
@@ -41,16 +41,19 @@ def generate_key():
         for _ in range(3)
     )
 
-# ================== ROUTES ==================
+# ================= ROUTES =================
 
 @app.get("/")
 def root():
     return {"status": "ok"}
 
+# ---------- VERIFY (MOD) ----------
+
 @app.post("/verify")
 def verify(data: dict):
     key = data.get("key")
     hwid = data.get("hwid")
+    nickname = data.get("nickname")
 
     if not key or not hwid:
         raise HTTPException(status_code=400, detail="key and hwid required")
@@ -62,12 +65,15 @@ def verify(data: dict):
         db.close()
         return JSONResponse({"status": "invalid"}, status_code=403)
 
+    # 🔐 первый запуск — привязка HWID + ник
     if lic.hwid is None:
         lic.hwid = hwid
+        lic.mc_nick = nickname
         db.commit()
         db.close()
         return {"status": "binded"}
 
+    # ❌ другой компьютер
     if lic.hwid != hwid:
         db.close()
         return JSONResponse({"status": "hwid_mismatch"}, status_code=403)
@@ -75,7 +81,7 @@ def verify(data: dict):
     db.close()
     return {"status": "ok"}
 
-# ================== ADMIN ==================
+# ---------- ADMIN ----------
 
 @app.post("/admin/genkey")
 def genkey():
@@ -91,7 +97,6 @@ def genkey():
 @app.post("/admin/revoke")
 def revoke(data: dict):
     key = data.get("key")
-
     if not key:
         raise HTTPException(status_code=400, detail="key required")
 
@@ -115,6 +120,7 @@ def list_keys():
         {
             "key": l.key,
             "hwid": l.hwid,
+            "mc_nick": l.mc_nick,
             "active": l.active
         }
         for l in db.query(License).all()
