@@ -1,7 +1,7 @@
 import os
 import secrets
 import string
-from datetime import datetime, date
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -49,15 +49,14 @@ class LicenseLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class PunishmentStat(Base):
-    __tablename__ = "punishment_stats"
+class StatsReport(Base):
+    __tablename__ = "staff_stats"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    date = Column(String, index=True)          # YYYY-MM-DD
-    staff = Column(String, index=True)         # ник стаффа
-    bans = Column(Integer, default=0)
-    mutes = Column(Integer, default=0)
-    total = Column(Integer, default=0)
+    date = Column(String, index=True)
+    bans = Column(Integer)
+    mutes = Column(Integer)
+    total = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -65,10 +64,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(
-    title="StaffHelp API",
-    version="2.0.0"
-)
+app = FastAPI(title="StaffHelp License Server", version="1.2.0")
 
 # ================== SCHEMAS ==================
 
@@ -82,11 +78,11 @@ class KeyRequest(BaseModel):
     key: str
 
 
-class StatsUpload(BaseModel):
-    date: str           # 2025-12-31
-    staff: str          # Nickname
+class StatsRequest(BaseModel):
+    date: str
     bans: int
     mutes: int
+    total: int
 
 # ================== UTILS ==================
 
@@ -97,7 +93,7 @@ def generate_key() -> str:
         for _ in range(3)
     )
 
-# ================== LICENSE ==================
+# ================== LICENSE ENDPOINTS ==================
 
 @app.post("/verify")
 def verify(data: VerifyRequest, request: Request):
@@ -109,7 +105,7 @@ def verify(data: VerifyRequest, request: Request):
             LicenseLog(
                 key=data.key,
                 nickname=data.nickname,
-                hwid=data.hwid[:16] + "..." if data.hwid else None,
+                hwid=(data.hwid[:16] + "...") if data.hwid else None,
                 status=status,
                 ip=ip
             )
@@ -123,6 +119,7 @@ def verify(data: VerifyRequest, request: Request):
             log("invalid_key")
             raise HTTPException(status_code=403, detail="invalid")
 
+        # Первый запуск — биндим HWID
         if lic.hwid is None:
             lic.hwid = data.hwid
             lic.nickname = data.nickname
@@ -140,7 +137,6 @@ def verify(data: VerifyRequest, request: Request):
     finally:
         db.close()
 
-# ================== ADMIN LICENSE ==================
 
 @app.post("/admin/genkey")
 def genkey():
@@ -185,87 +181,6 @@ def list_keys():
     finally:
         db.close()
 
-# ================== STATISTICS ==================
-
-@app.post("/stats/upload")
-def upload_stats(data: StatsUpload):
-    db = SessionLocal()
-    try:
-        stat = (
-            db.query(PunishmentStat)
-            .filter(
-                PunishmentStat.date == data.date,
-                PunishmentStat.staff == data.staff
-            )
-            .first()
-        )
-
-        total = data.bans + data.mutes
-
-        if stat:
-            stat.bans = data.bans
-            stat.mutes = data.mutes
-            stat.total = total
-        else:
-            db.add(
-                PunishmentStat(
-                    date=data.date,
-                    staff=data.staff,
-                    bans=data.bans,
-                    mutes=data.mutes,
-                    total=total
-                )
-            )
-
-        db.commit()
-        return {"status": "ok"}
-
-    finally:
-        db.close()
-
-
-@app.get("/admin/stats/today")
-def stats_today():
-    today = date.today().isoformat()
-    db = SessionLocal()
-
-    try:
-        return [
-            {
-                "staff": s.staff,
-                "bans": s.bans,
-                "mutes": s.mutes,
-                "total": s.total
-            }
-            for s in db.query(PunishmentStat)
-            .filter(PunishmentStat.date == today)
-            .order_by(PunishmentStat.total.desc())
-            .all()
-        ]
-    finally:
-        db.close()
-
-
-@app.get("/admin/stats/{day}")
-def stats_by_day(day: str):
-    db = SessionLocal()
-    try:
-        return [
-            {
-                "staff": s.staff,
-                "bans": s.bans,
-                "mutes": s.mutes,
-                "total": s.total
-            }
-            for s in db.query(PunishmentStat)
-            .filter(PunishmentStat.date == day)
-            .order_by(PunishmentStat.total.desc())
-            .all()
-        ]
-    finally:
-        db.close()
-
-# ================== LOGS ==================
 
 @app.get("/admin/logs")
 def logs(limit: int = 20):
@@ -284,6 +199,25 @@ def logs(limit: int = 20):
                   .limit(limit)
                   .all()
         ]
+    finally:
+        db.close()
+
+# ================== STATISTICS ENDPOINT ==================
+
+@app.post("/stats/report")
+def report_stats(data: StatsRequest):
+    db = SessionLocal()
+    try:
+        db.add(
+            StatsReport(
+                date=data.date,
+                bans=data.bans,
+                mutes=data.mutes,
+                total=data.total
+            )
+        )
+        db.commit()
+        return {"status": "ok"}
     finally:
         db.close()
 
