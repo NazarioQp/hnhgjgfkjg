@@ -44,7 +44,6 @@ class LicenseLog(Base):
     nickname = Column(String)
     hwid = Column(String)
     status = Column(String)
-    ip = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
