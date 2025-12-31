@@ -53,11 +53,13 @@ class StatsReport(Base):
     __tablename__ = "staff_stats"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    date = Column(String, index=True)
+    staff = Column(String, index=True)        # ник модера
+    date = Column(String, index=True)         # YYYY-MM-DD
     bans = Column(Integer)
     mutes = Column(Integer)
     total = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 
 Base.metadata.create_all(bind=engine)
