@@ -49,24 +49,23 @@ class LicenseLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class StatsReport(Base):
+class StaffStats(Base):
     __tablename__ = "staff_stats"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    staff = Column(String, index=True)        # ник модера
-    date = Column(String, index=True)         # YYYY-MM-DD
+    staff = Column(String, index=True)
+    date = Column(String, index=True)
     bans = Column(Integer)
     mutes = Column(Integer)
     total = Column(Integer)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp License Server", version="1.2.0")
+app = FastAPI(title="StaffHelp API", version="2.0.0")
 
 # ================== SCHEMAS ==================
 
@@ -80,49 +79,12 @@ class KeyRequest(BaseModel):
     key: str
 
 
-class StatsRequest(BaseModel):
+class StatsReport(BaseModel):
     staff: str
     date: str
     bans: int
     mutes: int
     total: int
-
-
-@app.post("/stats/report")
-def report_stats(data: StatsRequest):
-    db = SessionLocal()
-    try:
-        # ищем запись за этот день и этого модера
-        stat = (
-            db.query(StatsReport)
-            .filter(
-                StatsReport.staff == data.staff,
-                StatsReport.date == data.date
-            )
-            .first()
-        )
-
-        if stat:
-            # 🔄 обновляем
-            stat.bans = data.bans
-            stat.mutes = data.mutes
-            stat.total = data.total
-        else:
-            # ➕ создаём новую
-            stat = StatsReport(
-                staff=data.staff,
-                date=data.date,
-                bans=data.bans,
-                mutes=data.mutes,
-                total=data.total
-            )
-            db.add(stat)
-
-        db.commit()
-        return {"status": "ok"}
-
-    finally:
-        db.close()
 
 # ================== UTILS ==================
 
@@ -133,7 +95,7 @@ def generate_key() -> str:
         for _ in range(3)
     )
 
-# ================== LICENSE ENDPOINTS ==================
+# ================== LICENSE ==================
 
 @app.post("/verify")
 def verify(data: VerifyRequest, request: Request):
@@ -145,7 +107,7 @@ def verify(data: VerifyRequest, request: Request):
             LicenseLog(
                 key=data.key,
                 nickname=data.nickname,
-                hwid=(data.hwid[:16] + "...") if data.hwid else None,
+                hwid=data.hwid[:16] + "...",
                 status=status,
                 ip=ip
             )
@@ -157,9 +119,8 @@ def verify(data: VerifyRequest, request: Request):
 
         if not lic or not lic.active:
             log("invalid_key")
-            raise HTTPException(status_code=403, detail="invalid")
+            raise HTTPException(status_code=403)
 
-        # Первый запуск — биндим HWID
         if lic.hwid is None:
             lic.hwid = data.hwid
             lic.nickname = data.nickname
@@ -169,7 +130,7 @@ def verify(data: VerifyRequest, request: Request):
 
         if lic.hwid != data.hwid:
             log("hwid_mismatch")
-            raise HTTPException(status_code=403, detail="hwid_mismatch")
+            raise HTTPException(status_code=403)
 
         log("ok")
         return {"status": "ok"}
@@ -177,6 +138,7 @@ def verify(data: VerifyRequest, request: Request):
     finally:
         db.close()
 
+# ================== ADMIN ==================
 
 @app.post("/admin/genkey")
 def genkey():
@@ -196,7 +158,7 @@ def revoke(data: KeyRequest):
     try:
         lic = db.query(License).filter(License.key == data.key).first()
         if not lic:
-            raise HTTPException(status_code=404, detail="not found")
+            raise HTTPException(status_code=404)
 
         db.delete(lic)
         db.commit()
@@ -212,8 +174,8 @@ def list_keys():
         return [
             {
                 "key": l.key,
-                "hwid": l.hwid,
                 "nickname": l.nickname,
+                "hwid": l.hwid,
                 "active": l.active
             }
             for l in db.query(License).all()
@@ -235,33 +197,70 @@ def logs(limit: int = 20):
                 "ip": l.ip
             }
             for l in db.query(LicenseLog)
-                  .order_by(LicenseLog.created_at.desc())
-                  .limit(limit)
-                  .all()
+            .order_by(LicenseLog.created_at.desc())
+            .limit(limit)
+            .all()
         ]
     finally:
         db.close()
 
-# ================== STATISTICS ENDPOINT ==================
+# ================== STATS ==================
 
 @app.post("/stats/report")
-def report_stats(data: StatsRequest):
+def report_stats(data: StatsReport):
     db = SessionLocal()
     try:
-        db.add(
-            StatsReport(
-                date=data.date,
-                bans=data.bans,
-                mutes=data.mutes,
-                total=data.total
+        stat = (
+            db.query(StaffStats)
+            .filter(
+                StaffStats.staff == data.staff,
+                StaffStats.date == data.date
             )
+            .first()
         )
+
+        if stat:
+            stat.bans = data.bans
+            stat.mutes = data.mutes
+            stat.total = data.total
+        else:
+            db.add(
+                StaffStats(
+                    staff=data.staff,
+                    date=data.date,
+                    bans=data.bans,
+                    mutes=data.mutes,
+                    total=data.total
+                )
+            )
+
         db.commit()
         return {"status": "ok"}
     finally:
         db.close()
 
-# ================== ROOT ==================
+
+@app.get("/admin/stats")
+def get_stats(date: str | None = None):
+    db = SessionLocal()
+    try:
+        q = db.query(StaffStats)
+        if date:
+            q = q.filter(StaffStats.date == date)
+
+        return [
+            {
+                "staff": s.staff,
+                "date": s.date,
+                "bans": s.bans,
+                "mutes": s.mutes,
+                "total": s.total
+            }
+            for s in q.order_by(StaffStats.total.desc()).all()
+        ]
+    finally:
+        db.close()
+
 
 @app.get("/")
 def root():
