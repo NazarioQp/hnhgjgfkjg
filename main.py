@@ -1,8 +1,10 @@
 import os
 import secrets
 import string
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+
 from sqlalchemy import create_engine, Column, String, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -13,8 +15,17 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True
+)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False
+)
+
 Base = declarative_base()
 
 # ================== MODELS ==================
@@ -27,11 +38,15 @@ class License(Base):
     nickname = Column(String, nullable=True)
     active = Column(Boolean, default=True)
 
+# ⚠️ ВАЖНО: create_all ТОЛЬКО ОДИН РАЗ
 Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="License Server")
+app = FastAPI(
+    title="License Server",
+    version="1.0.0"
+)
 
 # ================== SCHEMAS ==================
 
@@ -63,6 +78,7 @@ def verify(data: VerifyRequest):
         if not lic or not lic.active:
             raise HTTPException(status_code=403, detail="invalid")
 
+        # первый запуск — бинд
         if lic.hwid is None:
             lic.hwid = data.hwid
             lic.nickname = data.nickname
@@ -77,6 +93,7 @@ def verify(data: VerifyRequest):
     finally:
         db.close()
 
+
 @app.post("/admin/genkey")
 def genkey():
     db = SessionLocal()
@@ -87,6 +104,7 @@ def genkey():
         return {"key": key}
     finally:
         db.close()
+
 
 @app.post("/admin/revoke")
 def revoke(data: KeyRequest):
@@ -101,6 +119,7 @@ def revoke(data: KeyRequest):
         return {"status": "deleted"}
     finally:
         db.close()
+
 
 @app.get("/admin/list")
 def list_keys():
