@@ -1,7 +1,7 @@
 import os
 import secrets
 import string
-from datetime import datetime
+from datetime import datetime, date
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -11,7 +11,8 @@ from sqlalchemy import (
     Column,
     String,
     Boolean,
-    DateTime
+    DateTime,
+    Integer
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -43,8 +44,20 @@ class LicenseLog(Base):
     key = Column(String)
     nickname = Column(String)
     hwid = Column(String)
-    status = Column(String)  # binded | ok | invalid_key | hwid_mismatch
+    status = Column(String)
     ip = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PunishmentStat(Base):
+    __tablename__ = "punishment_stats"
+
+    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
+    date = Column(String, index=True)          # YYYY-MM-DD
+    staff = Column(String, index=True)         # ник стаффа
+    bans = Column(Integer, default=0)
+    mutes = Column(Integer, default=0)
+    total = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -53,8 +66,8 @@ Base.metadata.create_all(bind=engine)
 # ================== FASTAPI ==================
 
 app = FastAPI(
-    title="License Server",
-    version="1.1.0"
+    title="StaffHelp API",
+    version="2.0.0"
 )
 
 # ================== SCHEMAS ==================
@@ -68,6 +81,13 @@ class VerifyRequest(BaseModel):
 class KeyRequest(BaseModel):
     key: str
 
+
+class StatsUpload(BaseModel):
+    date: str           # 2025-12-31
+    staff: str          # Nickname
+    bans: int
+    mutes: int
+
 # ================== UTILS ==================
 
 def generate_key() -> str:
@@ -77,7 +97,7 @@ def generate_key() -> str:
         for _ in range(3)
     )
 
-# ================== ENDPOINTS ==================
+# ================== LICENSE ==================
 
 @app.post("/verify")
 def verify(data: VerifyRequest, request: Request):
@@ -89,7 +109,7 @@ def verify(data: VerifyRequest, request: Request):
             LicenseLog(
                 key=data.key,
                 nickname=data.nickname,
-                hwid=(data.hwid[:16] + "...") if data.hwid else None,
+                hwid=data.hwid[:16] + "..." if data.hwid else None,
                 status=status,
                 ip=ip
             )
@@ -103,7 +123,6 @@ def verify(data: VerifyRequest, request: Request):
             log("invalid_key")
             raise HTTPException(status_code=403, detail="invalid")
 
-        # 🔐 первый запуск — биндим
         if lic.hwid is None:
             lic.hwid = data.hwid
             lic.nickname = data.nickname
@@ -115,13 +134,13 @@ def verify(data: VerifyRequest, request: Request):
             log("hwid_mismatch")
             raise HTTPException(status_code=403, detail="hwid_mismatch")
 
-        # ✅ валидная лицензия
         log("ok")
         return {"status": "ok"}
 
     finally:
         db.close()
 
+# ================== ADMIN LICENSE ==================
 
 @app.post("/admin/genkey")
 def genkey():
@@ -166,9 +185,90 @@ def list_keys():
     finally:
         db.close()
 
+# ================== STATISTICS ==================
+
+@app.post("/stats/upload")
+def upload_stats(data: StatsUpload):
+    db = SessionLocal()
+    try:
+        stat = (
+            db.query(PunishmentStat)
+            .filter(
+                PunishmentStat.date == data.date,
+                PunishmentStat.staff == data.staff
+            )
+            .first()
+        )
+
+        total = data.bans + data.mutes
+
+        if stat:
+            stat.bans = data.bans
+            stat.mutes = data.mutes
+            stat.total = total
+        else:
+            db.add(
+                PunishmentStat(
+                    date=data.date,
+                    staff=data.staff,
+                    bans=data.bans,
+                    mutes=data.mutes,
+                    total=total
+                )
+            )
+
+        db.commit()
+        return {"status": "ok"}
+
+    finally:
+        db.close()
+
+
+@app.get("/admin/stats/today")
+def stats_today():
+    today = date.today().isoformat()
+    db = SessionLocal()
+
+    try:
+        return [
+            {
+                "staff": s.staff,
+                "bans": s.bans,
+                "mutes": s.mutes,
+                "total": s.total
+            }
+            for s in db.query(PunishmentStat)
+            .filter(PunishmentStat.date == today)
+            .order_by(PunishmentStat.total.desc())
+            .all()
+        ]
+    finally:
+        db.close()
+
+
+@app.get("/admin/stats/{day}")
+def stats_by_day(day: str):
+    db = SessionLocal()
+    try:
+        return [
+            {
+                "staff": s.staff,
+                "bans": s.bans,
+                "mutes": s.mutes,
+                "total": s.total
+            }
+            for s in db.query(PunishmentStat)
+            .filter(PunishmentStat.date == day)
+            .order_by(PunishmentStat.total.desc())
+            .all()
+        ]
+    finally:
+        db.close()
+
+# ================== LOGS ==================
 
 @app.get("/admin/logs")
-def get_logs(limit: int = 20):
+def logs(limit: int = 20):
     db = SessionLocal()
     try:
         return [
@@ -179,16 +279,15 @@ def get_logs(limit: int = 20):
                 "status": l.status,
                 "ip": l.ip
             }
-            for l in (
-                db.query(LicenseLog)
-                .order_by(LicenseLog.created_at.desc())
-                .limit(limit)
-                .all()
-            )
+            for l in db.query(LicenseLog)
+                  .order_by(LicenseLog.created_at.desc())
+                  .limit(limit)
+                  .all()
         ]
     finally:
         db.close()
 
+# ================== ROOT ==================
 
 @app.get("/")
 def root():
