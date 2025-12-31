@@ -44,6 +44,7 @@ class LicenseLog(Base):
     nickname = Column(String)
     hwid = Column(String)
     status = Column(String)
+    ip = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -79,13 +80,13 @@ def verify(data: VerifyRequest, request: Request):
     db = SessionLocal()
     ip = request.client.host if request.client else "unknown"
 
-    def log_activation():
+    def log(status: str):
         db.add(
             LicenseLog(
                 key=data.key,
                 nickname=data.nickname,
                 hwid=data.hwid[:16] + "..." if data.hwid else None,
-                status="activated",
+                status=status,
                 ip=ip
             )
         )
@@ -95,27 +96,25 @@ def verify(data: VerifyRequest, request: Request):
         lic = db.query(License).filter(License.key == data.key).first()
 
         if not lic or not lic.active:
+            log("invalid_key")
             raise HTTPException(status_code=403, detail="invalid")
 
-        # ✅ ЛОГ ТОЛЬКО ПРИ ПЕРВОЙ АКТИВАЦИИ
         if lic.hwid is None:
             lic.hwid = data.hwid
             lic.nickname = data.nickname
             db.commit()
-
-            log_activation()
-
+            log("binded")
             return {"status": "binded"}
 
         if lic.hwid != data.hwid:
+            log("hwid_mismatch")
             raise HTTPException(status_code=403, detail="hwid_mismatch")
 
-        # обычная проверка — БЕЗ логов
+        log("ok")
         return {"status": "ok"}
 
     finally:
         db.close()
-
 
 
 @app.post("/admin/genkey")
