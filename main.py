@@ -193,3 +193,4 @@ def get_logs(limit: int = 20):
 @app.get("/")
 def root():
     return {"status": "ok"}
+
