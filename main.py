@@ -81,10 +81,48 @@ class KeyRequest(BaseModel):
 
 
 class StatsRequest(BaseModel):
+    staff: str
     date: str
     bans: int
     mutes: int
     total: int
+
+
+@app.post("/stats/report")
+def report_stats(data: StatsRequest):
+    db = SessionLocal()
+    try:
+        # ищем запись за этот день и этого модера
+        stat = (
+            db.query(StatsReport)
+            .filter(
+                StatsReport.staff == data.staff,
+                StatsReport.date == data.date
+            )
+            .first()
+        )
+
+        if stat:
+            # 🔄 обновляем
+            stat.bans = data.bans
+            stat.mutes = data.mutes
+            stat.total = data.total
+        else:
+            # ➕ создаём новую
+            stat = StatsReport(
+                staff=data.staff,
+                date=data.date,
+                bans=data.bans,
+                mutes=data.mutes,
+                total=data.total
+            )
+            db.add(stat)
+
+        db.commit()
+        return {"status": "ok"}
+
+    finally:
+        db.close()
 
 # ================== UTILS ==================
 
