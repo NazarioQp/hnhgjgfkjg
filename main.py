@@ -4,6 +4,7 @@ import string
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import (
     create_engine,
     Column,
@@ -30,8 +31,8 @@ class License(Base):
     __tablename__ = "licenses"
 
     key = Column(String, primary_key=True)
-    hwid = Column(String)
-    nickname = Column(String)
+    hwid = Column(String, nullable=True)
+    nickname = Column(String, nullable=True)
     active = Column(Boolean, default=True)
 
 
@@ -51,7 +52,17 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="2.0.0")
+app = FastAPI(title="StaffHelp API", version="2.1.0")
+
+# ================== SCHEMAS ==================
+
+class VerifyRequest(BaseModel):
+    key: str
+    hwid: str
+    nickname: str | None = None
+
+class KeyRequest(BaseModel):
+    key: str
 
 # ================== UTILS ==================
 
@@ -62,7 +73,79 @@ def generate_key() -> str:
         for _ in range(3)
     )
 
-# ================== STATS ENDPOINT ==================
+# ================== LICENSE VERIFY ==================
+
+@app.post("/verify")
+def verify(data: VerifyRequest, request: Request):
+    db = SessionLocal()
+    try:
+        lic = db.query(License).filter(License.key == data.key).first()
+
+        if not lic or not lic.active:
+            raise HTTPException(status_code=403, detail="invalid_key")
+
+        # первый запуск → биндим
+        if lic.hwid is None:
+            lic.hwid = data.hwid
+            lic.nickname = data.nickname
+            db.commit()
+            return {"status": "binded"}
+
+        # hwid не совпал
+        if lic.hwid != data.hwid:
+            raise HTTPException(status_code=403, detail="hwid_mismatch")
+
+        return {"status": "ok"}
+
+    finally:
+        db.close()
+
+# ================== ADMIN LICENSE ==================
+
+@app.post("/admin/genkey")
+def genkey():
+    db = SessionLocal()
+    try:
+        key = generate_key()
+        db.add(License(key=key))
+        db.commit()
+        return {"key": key}
+    finally:
+        db.close()
+
+
+@app.post("/admin/revoke")
+def revoke(data: KeyRequest):
+    db = SessionLocal()
+    try:
+        lic = db.query(License).filter(License.key == data.key).first()
+        if not lic:
+            raise HTTPException(status_code=404, detail="not found")
+
+        db.delete(lic)
+        db.commit()
+        return {"status": "deleted"}
+    finally:
+        db.close()
+
+
+@app.get("/admin/list")
+def list_keys():
+    db = SessionLocal()
+    try:
+        return [
+            {
+                "key": l.key,
+                "hwid": l.hwid,
+                "nickname": l.nickname,
+                "active": l.active
+            }
+            for l in db.query(License).all()
+        ]
+    finally:
+        db.close()
+
+# ================== STATS ==================
 
 @app.post("/stats/report")
 async def report_stats(request: Request):
@@ -74,7 +157,6 @@ async def report_stats(request: Request):
     mutes = int(data.get("mutes", 0))
     total = int(data.get("total", bans + mutes))
 
-    # 🔒 Минимальная валидация
     if not staff or not date:
         raise HTTPException(status_code=422, detail="staff and date required")
 
@@ -82,10 +164,7 @@ async def report_stats(request: Request):
     try:
         stat = (
             db.query(StaffStats)
-            .filter(
-                StaffStats.staff == staff,
-                StaffStats.date == date
-            )
+            .filter(StaffStats.staff == staff, StaffStats.date == date)
             .first()
         )
 
@@ -107,7 +186,6 @@ async def report_stats(request: Request):
 
         db.commit()
         return {"status": "ok"}
-
     finally:
         db.close()
 
