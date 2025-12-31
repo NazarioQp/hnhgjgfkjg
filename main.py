@@ -136,3 +136,7 @@ def list_keys():
         ]
     finally:
         db.close()
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
