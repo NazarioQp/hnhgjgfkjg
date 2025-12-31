@@ -80,13 +80,13 @@ def verify(data: VerifyRequest, request: Request):
     db = SessionLocal()
     ip = request.client.host if request.client else "unknown"
 
-    def log(status: str):
+    def log_activation():
         db.add(
             LicenseLog(
                 key=data.key,
                 nickname=data.nickname,
                 hwid=data.hwid[:16] + "..." if data.hwid else None,
-                status=status,
+                status="activated",
                 ip=ip
             )
         )
@@ -96,25 +96,27 @@ def verify(data: VerifyRequest, request: Request):
         lic = db.query(License).filter(License.key == data.key).first()
 
         if not lic or not lic.active:
-            log("invalid_key")
             raise HTTPException(status_code=403, detail="invalid")
 
+        # ✅ ЛОГ ТОЛЬКО ПРИ ПЕРВОЙ АКТИВАЦИИ
         if lic.hwid is None:
             lic.hwid = data.hwid
             lic.nickname = data.nickname
             db.commit()
-            log("binded")
+
+            log_activation()
+
             return {"status": "binded"}
 
         if lic.hwid != data.hwid:
-            log("hwid_mismatch")
             raise HTTPException(status_code=403, detail="hwid_mismatch")
 
-        log("ok")
+        # обычная проверка — БЕЗ логов
         return {"status": "ok"}
 
     finally:
         db.close()
+
 
 
 @app.post("/admin/genkey")
