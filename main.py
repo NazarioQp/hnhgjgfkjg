@@ -43,7 +43,7 @@ class LicenseLog(Base):
     key = Column(String)
     nickname = Column(String)
     hwid = Column(String)
-    status = Column(String)
+    status = Column(String)  # binded | ok | invalid_key | hwid_mismatch
     ip = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -52,7 +52,10 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="License Server", version="1.1.0")
+app = FastAPI(
+    title="License Server",
+    version="1.1.0"
+)
 
 # ================== SCHEMAS ==================
 
@@ -60,6 +63,7 @@ class VerifyRequest(BaseModel):
     key: str
     hwid: str
     nickname: str | None = None
+
 
 class KeyRequest(BaseModel):
     key: str
@@ -85,7 +89,7 @@ def verify(data: VerifyRequest, request: Request):
             LicenseLog(
                 key=data.key,
                 nickname=data.nickname,
-                hwid=data.hwid[:16] + "..." if data.hwid else None,
+                hwid=(data.hwid[:16] + "...") if data.hwid else None,
                 status=status,
                 ip=ip
             )
@@ -99,6 +103,7 @@ def verify(data: VerifyRequest, request: Request):
             log("invalid_key")
             raise HTTPException(status_code=403, detail="invalid")
 
+        # 🔐 первый запуск — биндим
         if lic.hwid is None:
             lic.hwid = data.hwid
             lic.nickname = data.nickname
@@ -110,6 +115,7 @@ def verify(data: VerifyRequest, request: Request):
             log("hwid_mismatch")
             raise HTTPException(status_code=403, detail="hwid_mismatch")
 
+        # ✅ валидная лицензия
         log("ok")
         return {"status": "ok"}
 
@@ -162,7 +168,7 @@ def list_keys():
 
 
 @app.get("/admin/logs")
-def logs(limit: int = 20):
+def get_logs(limit: int = 20):
     db = SessionLocal()
     try:
         return [
@@ -173,10 +179,12 @@ def logs(limit: int = 20):
                 "status": l.status,
                 "ip": l.ip
             }
-            for l in db.query(LicenseLog)
-                  .order_by(LicenseLog.created_at.desc())
-                  .limit(limit)
-                  .all()
+            for l in (
+                db.query(LicenseLog)
+                .order_by(LicenseLog.created_at.desc())
+                .limit(limit)
+                .all()
+            )
         ]
     finally:
         db.close()
