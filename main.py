@@ -4,15 +4,13 @@ import string
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
-
 from sqlalchemy import (
     create_engine,
     Column,
     String,
+    Integer,
     Boolean,
-    DateTime,
-    Integer
+    DateTime
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -31,22 +29,10 @@ Base = declarative_base()
 class License(Base):
     __tablename__ = "licenses"
 
-    key = Column(String, primary_key=True, index=True)
-    hwid = Column(String, nullable=True)
-    nickname = Column(String, nullable=True)
-    active = Column(Boolean, default=True)
-
-
-class LicenseLog(Base):
-    __tablename__ = "license_logs"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    key = Column(String)
-    nickname = Column(String)
+    key = Column(String, primary_key=True)
     hwid = Column(String)
-    status = Column(String)
-    ip = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    nickname = Column(String)
+    active = Column(Boolean, default=True)
 
 
 class StaffStats(Base):
@@ -55,10 +41,10 @@ class StaffStats(Base):
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
     staff = Column(String, index=True)
     date = Column(String, index=True)
-    bans = Column(Integer)
-    mutes = Column(Integer)
-    total = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    bans = Column(Integer, default=0)
+    mutes = Column(Integer, default=0)
+    total = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(bind=engine)
@@ -66,25 +52,6 @@ Base.metadata.create_all(bind=engine)
 # ================== FASTAPI ==================
 
 app = FastAPI(title="StaffHelp API", version="2.0.0")
-
-# ================== SCHEMAS ==================
-
-class VerifyRequest(BaseModel):
-    key: str
-    hwid: str
-    nickname: str | None = None
-
-
-class KeyRequest(BaseModel):
-    key: str
-
-
-class StatsReport(BaseModel):
-    staff: str
-    date: str
-    bans: int
-    mutes: int
-    total: int
 
 # ================== UTILS ==================
 
@@ -95,150 +62,56 @@ def generate_key() -> str:
         for _ in range(3)
     )
 
-# ================== LICENSE ==================
-
-@app.post("/verify")
-def verify(data: VerifyRequest, request: Request):
-    db = SessionLocal()
-    ip = request.client.host if request.client else "unknown"
-
-    def log(status: str):
-        db.add(
-            LicenseLog(
-                key=data.key,
-                nickname=data.nickname,
-                hwid=data.hwid[:16] + "...",
-                status=status,
-                ip=ip
-            )
-        )
-        db.commit()
-
-    try:
-        lic = db.query(License).filter(License.key == data.key).first()
-
-        if not lic or not lic.active:
-            log("invalid_key")
-            raise HTTPException(status_code=403)
-
-        if lic.hwid is None:
-            lic.hwid = data.hwid
-            lic.nickname = data.nickname
-            db.commit()
-            log("binded")
-            return {"status": "binded"}
-
-        if lic.hwid != data.hwid:
-            log("hwid_mismatch")
-            raise HTTPException(status_code=403)
-
-        log("ok")
-        return {"status": "ok"}
-
-    finally:
-        db.close()
-
-# ================== ADMIN ==================
-
-@app.post("/admin/genkey")
-def genkey():
-    db = SessionLocal()
-    try:
-        key = generate_key()
-        db.add(License(key=key))
-        db.commit()
-        return {"key": key}
-    finally:
-        db.close()
-
-
-@app.post("/admin/revoke")
-def revoke(data: KeyRequest):
-    db = SessionLocal()
-    try:
-        lic = db.query(License).filter(License.key == data.key).first()
-        if not lic:
-            raise HTTPException(status_code=404)
-
-        db.delete(lic)
-        db.commit()
-        return {"status": "deleted"}
-    finally:
-        db.close()
-
-
-@app.get("/admin/list")
-def list_keys():
-    db = SessionLocal()
-    try:
-        return [
-            {
-                "key": l.key,
-                "nickname": l.nickname,
-                "hwid": l.hwid,
-                "active": l.active
-            }
-            for l in db.query(License).all()
-        ]
-    finally:
-        db.close()
-
-
-@app.get("/admin/logs")
-def logs(limit: int = 20):
-    db = SessionLocal()
-    try:
-        return [
-            {
-                "time": l.created_at.isoformat(),
-                "key": l.key,
-                "nickname": l.nickname,
-                "status": l.status,
-                "ip": l.ip
-            }
-            for l in db.query(LicenseLog)
-            .order_by(LicenseLog.created_at.desc())
-            .limit(limit)
-            .all()
-        ]
-    finally:
-        db.close()
-
-# ================== STATS ==================
+# ================== STATS ENDPOINT ==================
 
 @app.post("/stats/report")
-def report_stats(data: StatsReport):
+async def report_stats(request: Request):
+    data = await request.json()
+
+    staff = data.get("staff")
+    date = data.get("date")
+    bans = int(data.get("bans", 0))
+    mutes = int(data.get("mutes", 0))
+    total = int(data.get("total", bans + mutes))
+
+    # 🔒 Минимальная валидация
+    if not staff or not date:
+        raise HTTPException(status_code=422, detail="staff and date required")
+
     db = SessionLocal()
     try:
         stat = (
             db.query(StaffStats)
             .filter(
-                StaffStats.staff == data.staff,
-                StaffStats.date == data.date
+                StaffStats.staff == staff,
+                StaffStats.date == date
             )
             .first()
         )
 
         if stat:
-            stat.bans = data.bans
-            stat.mutes = data.mutes
-            stat.total = data.total
+            stat.bans = bans
+            stat.mutes = mutes
+            stat.total = total
+            stat.updated_at = datetime.utcnow()
         else:
             db.add(
                 StaffStats(
-                    staff=data.staff,
-                    date=data.date,
-                    bans=data.bans,
-                    mutes=data.mutes,
-                    total=data.total
+                    staff=staff,
+                    date=date,
+                    bans=bans,
+                    mutes=mutes,
+                    total=total
                 )
             )
 
         db.commit()
         return {"status": "ok"}
+
     finally:
         db.close()
 
+# ================== ADMIN STATS ==================
 
 @app.get("/admin/stats")
 def get_stats(date: str | None = None):
@@ -261,6 +134,7 @@ def get_stats(date: str | None = None):
     finally:
         db.close()
 
+# ================== ROOT ==================
 
 @app.get("/")
 def root():
