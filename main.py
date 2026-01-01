@@ -153,29 +153,29 @@ def list_keys():
         db.close()
 
 # ================== STATS (ANTI-500 VERSION) ==================
-
-@app.post("/stats/report")
+    @app.post("/stats/report")
 async def report_stats(request: Request):
-    data = None
+    print("===== STATS REQUEST START =====")
 
-    # 1️⃣ Пытаемся прочитать ЛЮБОЙ файл из multipart
     try:
         form = await request.form()
-        for value in form.values():
-            if isinstance(value, UploadFile):
-                content = await value.read()
-                data = json.loads(content.decode("utf-8"))
-                break
+        print("FORM KEYS:", list(form.keys()))
+        for k, v in form.items():
+            if hasattr(v, "filename"):
+                content = await v.read()
+                print("FILE CONTENT:", content.decode("utf-8", errors="ignore"))
     except Exception as e:
-        print("FORM PARSE ERROR:", e)
+        print("FORM ERROR:", e)
 
-    # 2️⃣ Если файла не было — пробуем JSON
-    if data is None:
-        try:
-            data = await request.json()
-        except Exception:
-            print("NO FILE, NO JSON")
-            return {"status": "ignored", "reason": "no data"}
+    try:
+        data = await request.json()
+        print("JSON BODY:", data)
+    except Exception:
+        print("NO JSON BODY")
+
+    print("===== STATS REQUEST END =====")
+    return {"status": "debug"}
+
 
     # 3️⃣ Если пришёл весь statistics.json
     if "current" in data and isinstance(data["current"], dict):
