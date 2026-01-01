@@ -11,7 +11,7 @@ from sqlalchemy import (
     String,
     Integer,
     Boolean,
-    DateTime
+    DateTime,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -23,8 +23,18 @@ if not DATABASE_URL:
 
 print("DB URL:", DATABASE_URL)
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,   # ✅ проверяет соединение перед использованием
+    pool_recycle=1800,    # ✅ пересоздаёт соединение каждые 30 минут
+)
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False,
+)
+
 Base = declarative_base()
 
 # ================== MODELS ==================
@@ -54,7 +64,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.0.0")
+app = FastAPI(title="StaffHelp API", version="3.1.0")
 
 # ================== UTILS ==================
 
@@ -148,7 +158,7 @@ async def list_keys():
                 "key": l.key,
                 "hwid": l.hwid,
                 "nickname": l.nickname,
-                "active": l.active
+                "active": l.active,
             }
             for l in db.query(License).all()
         ]
@@ -186,7 +196,6 @@ async def report_stats(request: Request):
     if not isinstance(data, dict):
         return {"status": "ignored"}
 
-    # current / flat
     stats = data.get("current") if isinstance(data.get("current"), dict) else data
 
     staff = (
@@ -214,7 +223,7 @@ async def report_stats(request: Request):
             db.query(StaffStats)
             .filter(
                 StaffStats.staff == staff,
-                StaffStats.date == date
+                StaffStats.date == date,
             )
             .first()
         )
@@ -231,7 +240,7 @@ async def report_stats(request: Request):
                     date=date,
                     bans=bans,
                     mutes=mutes,
-                    total=total
+                    total=total,
                 )
             )
 
@@ -260,7 +269,7 @@ async def get_stats(date: str | None = None):
                 "date": s.date,
                 "bans": s.bans,
                 "mutes": s.mutes,
-                "total": s.total
+                "total": s.total,
             }
             for s in q.order_by(StaffStats.total.desc()).all()
         ]
