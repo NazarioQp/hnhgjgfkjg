@@ -153,90 +153,73 @@ def list_keys():
         db.close()
 
 # ================== STATS (ANTI-500 VERSION) ==================
-    @app.post("/stats/report")
+@app.post("/stats/report")
 async def report_stats(request: Request):
-    print("===== STATS REQUEST START =====")
+    data = None
 
+    # 1️⃣ Читаем multipart (файл)
     try:
         form = await request.form()
-        print("FORM KEYS:", list(form.keys()))
-        for k, v in form.items():
+        for v in form.values():
             if hasattr(v, "filename"):
                 content = await v.read()
-                print("FILE CONTENT:", content.decode("utf-8", errors="ignore"))
+                data = json.loads(content.decode("utf-8"))
+                break
     except Exception as e:
         print("FORM ERROR:", e)
 
-    try:
-        data = await request.json()
-        print("JSON BODY:", data)
-    except Exception:
-        print("NO JSON BODY")
+    # 2️⃣ Если файла нет — пробуем JSON
+    if data is None:
+        try:
+            data = await request.json()
+        except Exception:
+            print("NO FILE AND NO JSON")
+            return {"status": "ignored"}
 
-    print("===== STATS REQUEST END =====")
-    return {"status": "debug"}
-
-
-    # 3️⃣ Если пришёл весь statistics.json
-    if "current" in data and isinstance(data["current"], dict):
-        current = data["current"]
+    # 3️⃣ current
+    current = data.get("current") if isinstance(data, dict) else None
+    if isinstance(current, dict):
+        stats = current
     else:
-        current = data
+        stats = data
 
-    # staff (включая staffNickname)
+    # staff
     staff = (
-        data.get("staff")
-        or data.get("staffNickname")
+        data.get("staffNickname")
+        or data.get("staff")
         or data.get("nickname")
-        or data.get("player")
         or "UNKNOWN"
     )
 
-    # RU / EN ключи
-    date = current.get("date") or current.get("Дата")
-    bans = current.get("bans") or current.get("Банов")
-    mutes = current.get("mutes") or current.get("Мутов")
-    total = current.get("total") or current.get("Всего")
+    # RU ключи
+    date = stats.get("Дата")
+    bans = stats.get("Банов")
+    mutes = stats.get("Мутов")
+    total = stats.get("Всего")
 
     try:
         bans = int(bans or 0)
         mutes = int(mutes or 0)
         total = int(total or (bans + mutes))
     except Exception as e:
-        print("NUMBER PARSE ERROR:", e)
-        return {"status": "ignored", "reason": "invalid numbers"}
+        print("NUMBER ERROR:", e)
+        return {"status": "ignored"}
 
     if not date:
         print("NO DATE")
-        return {"status": "ignored", "reason": "no date"}
+        return {"status": "ignored"}
 
     db = SessionLocal()
     try:
-        stat = (
-            db.query(StaffStats)
-            .filter(
-                StaffStats.staff == staff,
-                StaffStats.date == date
+        db.add(
+            StaffStats(
+                staff=staff,
+                date=date,
+                bans=bans,
+                mutes=mutes,
+                total=total
             )
-            .first()
         )
-
-        if stat:
-            stat.bans = bans
-            stat.mutes = mutes
-            stat.total = total
-            stat.updated_at = datetime.utcnow()
-        else:
-            db.add(
-                StaffStats(
-                    staff=staff,
-                    date=date,
-                    bans=bans,
-                    mutes=mutes,
-                    total=total
-                )
-            )
-
         db.commit()
         print("✅ STATS SAVED:", staff, date, bans, mutes, total)
         return {"status": "ok"}
