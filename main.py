@@ -153,33 +153,38 @@ def list_keys():
 
 @app.post("/stats/report")
 async def report_stats(request: Request):
-    # пробуем JSON
     try:
         data = await request.json()
     except Exception:
-        # если не JSON — пробуем form-data
-        try:
-            form = await request.form()
-            data = dict(form)
-        except Exception:
-            raise HTTPException(status_code=400, detail="invalid request body")
+        return {"status": "ignored", "reason": "not json"}
 
-    # возможные имена полей из мода
+    # если пришёл весь statistics.json
+    if "current" in data and isinstance(data["current"], dict):
+        data = data["current"]
+
+    # staff (не обязателен)
     staff = (
         data.get("staff")
-        or data.get("staffName")
         or data.get("nickname")
         or data.get("player")
+        or "UNKNOWN"
     )
 
-    date = data.get("date")
+    # поддержка RU / EN ключей
+    date = data.get("date") or data.get("Дата")
+    bans = data.get("bans") or data.get("Банов")
+    mutes = data.get("mutes") or data.get("Мутов")
+    total = data.get("total") or data.get("Всего")
 
-    bans = safe_int(data.get("bans"))
-    mutes = safe_int(data.get("mutes"))
-    total = safe_int(data.get("total"), bans + mutes)
+    try:
+        bans = int(bans or 0)
+        mutes = int(mutes or 0)
+        total = int(total or (bans + mutes))
+    except Exception:
+        return {"status": "ignored", "reason": "invalid numbers"}
 
-    if not staff or not date:
-        raise HTTPException(status_code=422, detail="staff and date required")
+    if not date:
+        return {"status": "ignored", "reason": "no date"}
 
     db = SessionLocal()
     try:
@@ -210,8 +215,12 @@ async def report_stats(request: Request):
 
         db.commit()
         return {"status": "ok"}
+    except Exception as e:
+        print("STATS ERROR:", e)
+        return {"status": "error"}
     finally:
         db.close()
+
 
 # ================== ADMIN STATS ==================
 
