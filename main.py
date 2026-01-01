@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     Boolean,
     DateTime,
+    BigInteger,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -21,20 +22,13 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
-print("DB URL:", DATABASE_URL)
-
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,   # ✅ проверяет соединение перед использованием
-    pool_recycle=1800,    # ✅ пересоздаёт соединение каждые 30 минут
+    pool_pre_ping=True,
+    pool_recycle=1800,
 )
 
-SessionLocal = sessionmaker(
-    bind=engine,
-    autoflush=False,
-    autocommit=False,
-)
-
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 # ================== MODELS ==================
@@ -60,26 +54,33 @@ class StaffStats(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Admin(Base):
+    __tablename__ = "admins"
+
+    user_id = Column(BigInteger, primary_key=True)
+    role = Column(String)  # "root" | "admin"
+
+
 Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.1.0")
+app = FastAPI(title="StaffHelp API", version="3.2.0")
 
 # ================== UTILS ==================
 
-def generate_key() -> str:
+def generate_key():
     alphabet = string.ascii_uppercase + string.digits
     return "-".join(
         "".join(secrets.choice(alphabet) for _ in range(5))
         for _ in range(3)
     )
 
-def safe_int(value, default=0) -> int:
+def safe_int(v, d=0):
     try:
-        return int(value)
+        return int(v)
     except Exception:
-        return default
+        return d
 
 # ================== VERIFY ==================
 
@@ -92,14 +93,13 @@ async def verify(request: Request):
     nickname = data.get("nickname")
 
     if not key or not hwid:
-        raise HTTPException(status_code=400, detail="invalid_request")
+        raise HTTPException(400, "invalid_request")
 
     db = SessionLocal()
     try:
-        lic = db.query(License).filter(License.key == key).first()
-
+        lic = db.query(License).filter_by(key=key).first()
         if not lic or not lic.active:
-            raise HTTPException(status_code=403, detail="invalid_key")
+            raise HTTPException(403, "invalid_key")
 
         if lic.hwid is None:
             lic.hwid = hwid
@@ -108,7 +108,7 @@ async def verify(request: Request):
             return {"status": "binded"}
 
         if lic.hwid != hwid:
-            raise HTTPException(status_code=403, detail="hwid_mismatch")
+            raise HTTPException(403, "hwid_mismatch")
 
         return {"status": "ok"}
     finally:
@@ -134,14 +134,13 @@ async def revoke(request: Request):
     key = data.get("key")
 
     if not key:
-        raise HTTPException(status_code=400, detail="key required")
+        raise HTTPException(400, "key required")
 
     db = SessionLocal()
     try:
-        lic = db.query(License).filter(License.key == key).first()
+        lic = db.query(License).filter_by(key=key).first()
         if not lic:
-            raise HTTPException(status_code=404, detail="not found")
-
+            raise HTTPException(404, "not found")
         db.delete(lic)
         db.commit()
         return {"status": "deleted"}
@@ -165,91 +164,59 @@ async def list_keys():
     finally:
         db.close()
 
-# ================== STATS REPORT (UPSERT) ==================
+# ================== STATS REPORT ==================
 
 @app.post("/stats/report")
 async def report_stats(request: Request):
     raw = await request.body()
-
     if not raw:
         return {"status": "ignored"}
 
     data = None
-
-    # 1️⃣ JSON
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode())
     except Exception:
-        pass
-
-    # 2️⃣ multipart fallback
-    if data is None:
         try:
-            text = raw.decode("utf-8", errors="ignore")
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1:
-                data = json.loads(text[start:end + 1])
+            text = raw.decode(errors="ignore")
+            s, e = text.find("{"), text.rfind("}")
+            if s != -1 and e != -1:
+                data = json.loads(text[s:e+1])
         except Exception:
             return {"status": "ignored"}
 
     if not isinstance(data, dict):
         return {"status": "ignored"}
 
-    stats = data.get("current") if isinstance(data.get("current"), dict) else data
+    stats = data.get("current", data)
 
-    staff = (
-        data.get("staffNickname")
-        or data.get("staff")
-        or "UNKNOWN"
-    )
-
+    staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
     date = stats.get("date") or stats.get("Дата")
-    bans = stats.get("bans") or stats.get("Банов")
-    mutes = stats.get("mutes") or stats.get("Мутов")
-    total = stats.get("total") or stats.get("Всего")
 
     if not date:
-        print("NO DATE IN STATS:", stats)
         return {"status": "ignored"}
 
-    bans = safe_int(bans)
-    mutes = safe_int(mutes)
-    total = safe_int(total, bans + mutes)
+    bans = safe_int(stats.get("bans") or stats.get("Банов"))
+    mutes = safe_int(stats.get("mutes") or stats.get("Мутов"))
+    total = safe_int(stats.get("total") or stats.get("Всего"), bans + mutes)
 
     db = SessionLocal()
     try:
-        stat = (
-            db.query(StaffStats)
-            .filter(
-                StaffStats.staff == staff,
-                StaffStats.date == date,
-            )
-            .first()
-        )
-
-        if stat:
-            stat.bans = bans
-            stat.mutes = mutes
-            stat.total = total
-            stat.updated_at = datetime.utcnow()
+        row = db.query(StaffStats).filter_by(staff=staff, date=date).first()
+        if row:
+            row.bans = bans
+            row.mutes = mutes
+            row.total = total
+            row.updated_at = datetime.utcnow()
         else:
-            db.add(
-                StaffStats(
-                    staff=staff,
-                    date=date,
-                    bans=bans,
-                    mutes=mutes,
-                    total=total,
-                )
-            )
-
+            db.add(StaffStats(
+                staff=staff,
+                date=date,
+                bans=bans,
+                mutes=mutes,
+                total=total,
+            ))
         db.commit()
-        print("✅ STATS UPSERT:", staff, date, bans, mutes, total)
         return {"status": "ok"}
-    except Exception as e:
-        print("DB ERROR:", e)
-        return {"status": "error"}
     finally:
         db.close()
 
@@ -261,8 +228,7 @@ async def get_stats(date: str | None = None):
     try:
         q = db.query(StaffStats)
         if date:
-            q = q.filter(StaffStats.date == date)
-
+            q = q.filter_by(date=date)
         return [
             {
                 "staff": s.staff,
@@ -275,8 +241,6 @@ async def get_stats(date: str | None = None):
         ]
     finally:
         db.close()
-
-# ================== ROOT ==================
 
 @app.get("/")
 async def root():
