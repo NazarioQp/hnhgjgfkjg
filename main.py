@@ -155,47 +155,54 @@ def list_keys():
 # ================== STATS (ANTI-500 VERSION) ==================
 @app.post("/stats/report")
 async def report_stats(request: Request):
+    raw = await request.body()
+
+    if not raw:
+        print("EMPTY BODY")
+        return {"status": "ignored"}
+
     data = None
 
-    # 1️⃣ Читаем multipart (файл)
+    # 1️⃣ Пробуем как JSON (если вдруг не multipart)
     try:
-        form = await request.form()
-        for v in form.values():
-            if hasattr(v, "filename"):
-                content = await v.read()
-                data = json.loads(content.decode("utf-8"))
-                break
-    except Exception as e:
-        print("FORM ERROR:", e)
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        pass
 
-    # 2️⃣ Если файла нет — пробуем JSON
+    # 2️⃣ Если multipart — ищем JSON внутри
     if data is None:
         try:
-            data = await request.json()
-        except Exception:
-            print("NO FILE AND NO JSON")
-            return {"status": "ignored"}
+            text = raw.decode("utf-8", errors="ignore")
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1:
+                data = json.loads(text[start:end + 1])
+        except Exception as e:
+            print("MULTIPART PARSE ERROR:", e)
+
+    if not isinstance(data, dict):
+        print("NO JSON FOUND")
+        return {"status": "ignored"}
 
     # 3️⃣ current
-    current = data.get("current") if isinstance(data, dict) else None
-    if isinstance(current, dict):
-        stats = current
-    else:
-        stats = data
+    stats = data.get("current") if isinstance(data.get("current"), dict) else data
 
-    # staff
+    # 4️⃣ staff
     staff = (
         data.get("staffNickname")
         or data.get("staff")
-        or data.get("nickname")
         or "UNKNOWN"
     )
 
-    # RU ключи
+    # 5️⃣ RU ключи
     date = stats.get("Дата")
     bans = stats.get("Банов")
     mutes = stats.get("Мутов")
     total = stats.get("Всего")
+
+    if not date:
+        print("NO DATE IN STATS:", stats)
+        return {"status": "ignored"}
 
     try:
         bans = int(bans or 0)
@@ -203,10 +210,6 @@ async def report_stats(request: Request):
         total = int(total or (bans + mutes))
     except Exception as e:
         print("NUMBER ERROR:", e)
-        return {"status": "ignored"}
-
-    if not date:
-        print("NO DATE")
         return {"status": "ignored"}
 
     db = SessionLocal()
@@ -228,7 +231,6 @@ async def report_stats(request: Request):
         return {"status": "error"}
     finally:
         db.close()
-
 
 # ================== ROOT ==================
 
