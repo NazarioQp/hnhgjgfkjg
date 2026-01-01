@@ -21,10 +21,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
+print("DB URL:", DATABASE_URL)
+
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,
-    pool_recycle=1800,
+    pool_pre_ping=True,   # ✅ проверяет соединение перед использованием
+    pool_recycle=1800,    # ✅ пересоздаёт соединение каждые 30 минут
 )
 
 SessionLocal = sessionmaker(
@@ -58,19 +60,11 @@ class StaffStats(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
-# 🔥 НОВОЕ: АДМИНЫ В БД
-class Admin(Base):
-    __tablename__ = "admins"
-
-    user_id = Column(String, primary_key=True)
-    role = Column(String)  # "root" | "admin"
-
-
 Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.2.0")
+app = FastAPI(title="StaffHelp API", version="3.1.0")
 
 # ================== UTILS ==================
 
@@ -81,79 +75,31 @@ def generate_key() -> str:
         for _ in range(3)
     )
 
-def safe_int(v, d=0):
+def safe_int(value, default=0) -> int:
     try:
-        return int(v)
+        return int(value)
     except Exception:
-        return d
+        return default
 
-# ================== ADMINS API ==================
-
-@app.get("/admin/admins")
-async def list_admins():
-    db = SessionLocal()
-    try:
-        return [
-            {"user_id": a.user_id, "role": a.role}
-            for a in db.query(Admin).all()
-        ]
-    finally:
-        db.close()
-
-
-@app.post("/admin/addadmin")
-async def add_admin(req: Request):
-    data = await req.json()
-    user_id = str(data.get("user_id"))
-    role = data.get("role", "admin")
-
-    db = SessionLocal()
-    try:
-        if db.query(Admin).filter(Admin.user_id == user_id).first():
-            raise HTTPException(400, "already exists")
-
-        db.add(Admin(user_id=user_id, role=role))
-        db.commit()
-        return {"status": "ok"}
-    finally:
-        db.close()
-
-
-@app.post("/admin/deladmin")
-async def del_admin(req: Request):
-    data = await req.json()
-    user_id = str(data.get("user_id"))
-
-    db = SessionLocal()
-    try:
-        admin = db.query(Admin).filter(Admin.user_id == user_id).first()
-        if not admin:
-            raise HTTPException(404, "not found")
-
-        db.delete(admin)
-        db.commit()
-        return {"status": "deleted"}
-    finally:
-        db.close()
-
-# ================== VERIFY / LICENSE / STATS ==================
-# ⚠️ НИЖЕ КОД НЕ ТРОНУТ — ТВОЯ РАБОЧАЯ ЛОГИКА
+# ================== VERIFY ==================
 
 @app.post("/verify")
 async def verify(request: Request):
     data = await request.json()
+
     key = data.get("key")
     hwid = data.get("hwid")
     nickname = data.get("nickname")
 
     if not key or not hwid:
-        raise HTTPException(400)
+        raise HTTPException(status_code=400, detail="invalid_request")
 
     db = SessionLocal()
     try:
         lic = db.query(License).filter(License.key == key).first()
+
         if not lic or not lic.active:
-            raise HTTPException(403)
+            raise HTTPException(status_code=403, detail="invalid_key")
 
         if lic.hwid is None:
             lic.hwid = hwid
@@ -162,11 +108,13 @@ async def verify(request: Request):
             return {"status": "binded"}
 
         if lic.hwid != hwid:
-            raise HTTPException(403)
+            raise HTTPException(status_code=403, detail="hwid_mismatch")
 
         return {"status": "ok"}
     finally:
         db.close()
+
+# ================== ADMIN LICENSE ==================
 
 @app.post("/admin/genkey")
 async def genkey():
@@ -179,21 +127,27 @@ async def genkey():
     finally:
         db.close()
 
+
 @app.post("/admin/revoke")
-async def revoke(req: Request):
-    data = await req.json()
+async def revoke(request: Request):
+    data = await request.json()
     key = data.get("key")
+
+    if not key:
+        raise HTTPException(status_code=400, detail="key required")
 
     db = SessionLocal()
     try:
         lic = db.query(License).filter(License.key == key).first()
         if not lic:
-            raise HTTPException(404)
+            raise HTTPException(status_code=404, detail="not found")
+
         db.delete(lic)
         db.commit()
         return {"status": "deleted"}
     finally:
         db.close()
+
 
 @app.get("/admin/list")
 async def list_keys():
@@ -211,47 +165,119 @@ async def list_keys():
     finally:
         db.close()
 
+# ================== STATS REPORT (UPSERT) ==================
+
 @app.post("/stats/report")
 async def report_stats(request: Request):
     raw = await request.body()
+
     if not raw:
         return {"status": "ignored"}
 
+    data = None
+
+    # 1️⃣ JSON
     try:
-        data = json.loads(raw.decode())
+        data = json.loads(raw.decode("utf-8"))
     except Exception:
+        pass
+
+    # 2️⃣ multipart fallback
+    if data is None:
+        try:
+            text = raw.decode("utf-8", errors="ignore")
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1:
+                data = json.loads(text[start:end + 1])
+        except Exception:
+            return {"status": "ignored"}
+
+    if not isinstance(data, dict):
         return {"status": "ignored"}
 
-    stats = data.get("current", data)
-    staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
+    stats = data.get("current") if isinstance(data.get("current"), dict) else data
 
-    date = stats.get("date")
-    bans = safe_int(stats.get("bans"))
-    mutes = safe_int(stats.get("mutes"))
-    total = safe_int(stats.get("total"), bans + mutes)
+    staff = (
+        data.get("staffNickname")
+        or data.get("staff")
+        or "UNKNOWN"
+    )
+
+    date = stats.get("date") or stats.get("Дата")
+    bans = stats.get("bans") or stats.get("Банов")
+    mutes = stats.get("mutes") or stats.get("Мутов")
+    total = stats.get("total") or stats.get("Всего")
+
+    if not date:
+        print("NO DATE IN STATS:", stats)
+        return {"status": "ignored"}
+
+    bans = safe_int(bans)
+    mutes = safe_int(mutes)
+    total = safe_int(total, bans + mutes)
 
     db = SessionLocal()
     try:
-        s = db.query(StaffStats).filter(
-            StaffStats.staff == staff,
-            StaffStats.date == date
-        ).first()
+        stat = (
+            db.query(StaffStats)
+            .filter(
+                StaffStats.staff == staff,
+                StaffStats.date == date,
+            )
+            .first()
+        )
 
-        if s:
-            s.bans = bans
-            s.mutes = mutes
-            s.total = total
-            s.updated_at = datetime.utcnow()
+        if stat:
+            stat.bans = bans
+            stat.mutes = mutes
+            stat.total = total
+            stat.updated_at = datetime.utcnow()
         else:
-            db.add(StaffStats(
-                staff=staff,
-                date=date,
-                bans=bans,
-                mutes=mutes,
-                total=total
-            ))
+            db.add(
+                StaffStats(
+                    staff=staff,
+                    date=date,
+                    bans=bans,
+                    mutes=mutes,
+                    total=total,
+                )
+            )
 
         db.commit()
+        print("✅ STATS UPSERT:", staff, date, bans, mutes, total)
         return {"status": "ok"}
+    except Exception as e:
+        print("DB ERROR:", e)
+        return {"status": "error"}
     finally:
         db.close()
+
+# ================== ADMIN STATS ==================
+
+@app.get("/admin/stats")
+async def get_stats(date: str | None = None):
+    db = SessionLocal()
+    try:
+        q = db.query(StaffStats)
+        if date:
+            q = q.filter(StaffStats.date == date)
+
+        return [
+            {
+                "staff": s.staff,
+                "date": s.date,
+                "bans": s.bans,
+                "mutes": s.mutes,
+                "total": s.total,
+            }
+            for s in q.order_by(StaffStats.total.desc()).all()
+        ]
+    finally:
+        db.close()
+
+# ================== ROOT ==================
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
