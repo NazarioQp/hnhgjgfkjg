@@ -2,6 +2,7 @@ import os
 import secrets
 import string
 from datetime import datetime
+from fastapi import UploadFile, File
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -152,17 +153,33 @@ def list_keys():
 # ================== STATS (ANTI-500 VERSION) ==================
 
 @app.post("/stats/report")
-async def report_stats(request: Request):
-    try:
-        data = await request.json()
-    except Exception:
-        return {"status": "ignored", "reason": "not json"}
+async def report_stats(
+    request: Request,
+    file: UploadFile | None = File(default=None)
+):
+    data = None
 
-    # если пришёл весь statistics.json
+    # 1️⃣ если пришёл файл (основной кейс)
+    if file is not None:
+        try:
+            content = await file.read()
+            data = json.loads(content.decode("utf-8"))
+        except Exception as e:
+            print("FILE PARSE ERROR:", e)
+            return {"status": "ignored", "reason": "bad file"}
+
+    # 2️⃣ если всё-таки JSON
+    if data is None:
+        try:
+            data = await request.json()
+        except Exception:
+            return {"status": "ignored", "reason": "no data"}
+
+    # 3️⃣ если прислали весь statistics.json
     if "current" in data and isinstance(data["current"], dict):
         data = data["current"]
 
-    # staff (не обязателен)
+    # staff
     staff = (
         data.get("staff")
         or data.get("nickname")
@@ -170,7 +187,7 @@ async def report_stats(request: Request):
         or "UNKNOWN"
     )
 
-    # поддержка RU / EN ключей
+    # RU / EN ключи
     date = data.get("date") or data.get("Дата")
     bans = data.get("bans") or data.get("Банов")
     mutes = data.get("mutes") or data.get("Мутов")
@@ -214,9 +231,10 @@ async def report_stats(request: Request):
             )
 
         db.commit()
+        print("STATS SAVED:", staff, date, bans, mutes, total)
         return {"status": "ok"}
     except Exception as e:
-        print("STATS ERROR:", e)
+        print("DB ERROR:", e)
         return {"status": "error"}
     finally:
         db.close()
