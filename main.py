@@ -3,7 +3,7 @@ import secrets
 import string
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import (
     create_engine,
@@ -52,7 +52,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="2.2.0")
+app = FastAPI(title="StaffHelp API", version="2.3.0")
 
 # ================== SCHEMAS ==================
 
@@ -65,14 +65,6 @@ class VerifyRequest(BaseModel):
 class KeyRequest(BaseModel):
     key: str
 
-
-class StatsRequest(BaseModel):
-    staff: str
-    date: str
-    bans: int = 0
-    mutes: int = 0
-    total: int | None = None
-
 # ================== UTILS ==================
 
 def generate_key() -> str:
@@ -81,6 +73,12 @@ def generate_key() -> str:
         "".join(secrets.choice(alphabet) for _ in range(5))
         for _ in range(3)
     )
+
+def safe_int(value, default=0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 # ================== LICENSE VERIFY ==================
 
@@ -151,35 +149,61 @@ def list_keys():
     finally:
         db.close()
 
-# ================== STATS ==================
+# ================== STATS (ANTI-500 VERSION) ==================
 
 @app.post("/stats/report")
-def report_stats(data: StatsRequest):
-    total = data.total if data.total is not None else data.bans + data.mutes
+async def report_stats(request: Request):
+    # пробуем JSON
+    try:
+        data = await request.json()
+    except Exception:
+        # если не JSON — пробуем form-data
+        try:
+            form = await request.form()
+            data = dict(form)
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid request body")
+
+    # возможные имена полей из мода
+    staff = (
+        data.get("staff")
+        or data.get("staffName")
+        or data.get("nickname")
+        or data.get("player")
+    )
+
+    date = data.get("date")
+
+    bans = safe_int(data.get("bans"))
+    mutes = safe_int(data.get("mutes"))
+    total = safe_int(data.get("total"), bans + mutes)
+
+    if not staff or not date:
+        raise HTTPException(status_code=422, detail="staff and date required")
 
     db = SessionLocal()
     try:
         stat = (
             db.query(StaffStats)
             .filter(
-                StaffStats.staff == data.staff,
-                StaffStats.date == data.date
+                StaffStats.staff == staff,
+                StaffStats.date == date
             )
             .first()
         )
 
         if stat:
-            stat.bans = data.bans
-            stat.mutes = data.mutes
+            stat.bans = bans
+            stat.mutes = mutes
             stat.total = total
             stat.updated_at = datetime.utcnow()
         else:
             db.add(
                 StaffStats(
-                    staff=data.staff,
-                    date=data.date,
-                    bans=data.bans,
-                    mutes=data.mutes,
+                    staff=staff,
+                    date=date,
+                    bans=bans,
+                    mutes=mutes,
                     total=total
                 )
             )
