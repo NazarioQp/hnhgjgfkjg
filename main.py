@@ -194,11 +194,11 @@ async def report_stats(request: Request):
         or "UNKNOWN"
     )
 
-    # 5️⃣ RU ключи
-date = stats.get("date") or stats.get("Дата")
-bans = stats.get("bans") or stats.get("Банов")
-mutes = stats.get("mutes") or stats.get("Мутов")
-total = stats.get("total") or stats.get("Всего")
+    # 5️⃣ RU + EN ключи
+    date = stats.get("date") or stats.get("Дата")
+    bans = stats.get("bans") or stats.get("Банов")
+    mutes = stats.get("mutes") or stats.get("Мутов")
+    total = stats.get("total") or stats.get("Всего")
 
     if not date:
         print("NO DATE IN STATS:", stats)
