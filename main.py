@@ -65,7 +65,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.2.0")
+app = FastAPI(title="StaffHelp API", version="3.3.0")
 
 # ================== UTILS ==================
 
@@ -81,6 +81,56 @@ def safe_int(v, d=0):
         return int(v)
     except Exception:
         return d
+
+# ================== ADMINS API ==================
+
+@app.get("/admin/admins")
+async def list_admins():
+    db = SessionLocal()
+    try:
+        return [
+            {"user_id": a.user_id, "role": a.role}
+            for a in db.query(Admin).all()
+        ]
+    finally:
+        db.close()
+
+
+@app.post("/admin/addadmin")
+async def add_admin(data: dict):
+    user_id = data.get("user_id")
+    role = data.get("role", "admin")
+
+    if role not in ("admin", "root"):
+        raise HTTPException(400, "invalid role")
+
+    db = SessionLocal()
+    try:
+        if db.query(Admin).filter_by(user_id=user_id).first():
+            raise HTTPException(409, "already exists")
+
+        db.add(Admin(user_id=user_id, role=role))
+        db.commit()
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+
+@app.post("/admin/deladmin")
+async def del_admin(data: dict):
+    user_id = data.get("user_id")
+
+    db = SessionLocal()
+    try:
+        adm = db.query(Admin).filter_by(user_id=user_id).first()
+        if not adm:
+            raise HTTPException(404, "not found")
+
+        db.delete(adm)
+        db.commit()
+        return {"status": "deleted"}
+    finally:
+        db.close()
 
 # ================== VERIFY ==================
 
@@ -114,7 +164,7 @@ async def verify(request: Request):
     finally:
         db.close()
 
-# ================== ADMIN LICENSE ==================
+# ================== LICENSE ADMIN ==================
 
 @app.post("/admin/genkey")
 async def genkey():
@@ -132,9 +182,6 @@ async def genkey():
 async def revoke(request: Request):
     data = await request.json()
     key = data.get("key")
-
-    if not key:
-        raise HTTPException(400, "key required")
 
     db = SessionLocal()
     try:
@@ -164,7 +211,7 @@ async def list_keys():
     finally:
         db.close()
 
-# ================== STATS REPORT ==================
+# ================== STATS ==================
 
 @app.post("/stats/report")
 async def report_stats(request: Request):
@@ -176,22 +223,17 @@ async def report_stats(request: Request):
     try:
         data = json.loads(raw.decode())
     except Exception:
-        try:
-            text = raw.decode(errors="ignore")
-            s, e = text.find("{"), text.rfind("}")
-            if s != -1 and e != -1:
-                data = json.loads(text[s:e+1])
-        except Exception:
-            return {"status": "ignored"}
+        text = raw.decode(errors="ignore")
+        s, e = text.find("{"), text.rfind("}")
+        if s != -1 and e != -1:
+            data = json.loads(text[s:e + 1])
 
     if not isinstance(data, dict):
         return {"status": "ignored"}
 
     stats = data.get("current", data)
-
     staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
     date = stats.get("date") or stats.get("Дата")
-
     if not date:
         return {"status": "ignored"}
 
@@ -220,7 +262,6 @@ async def report_stats(request: Request):
     finally:
         db.close()
 
-# ================== ADMIN STATS ==================
 
 @app.get("/admin/stats")
 async def get_stats(date: str | None = None):
