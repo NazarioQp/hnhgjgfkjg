@@ -3,7 +3,7 @@ import secrets
 import string
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import (
     create_engine,
@@ -52,7 +52,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="2.1.0")
+app = FastAPI(title="StaffHelp API", version="2.2.0")
 
 # ================== SCHEMAS ==================
 
@@ -61,8 +61,17 @@ class VerifyRequest(BaseModel):
     hwid: str
     nickname: str | None = None
 
+
 class KeyRequest(BaseModel):
     key: str
+
+
+class StatsRequest(BaseModel):
+    staff: str
+    date: str
+    bans: int = 0
+    mutes: int = 0
+    total: int | None = None
 
 # ================== UTILS ==================
 
@@ -76,7 +85,7 @@ def generate_key() -> str:
 # ================== LICENSE VERIFY ==================
 
 @app.post("/verify")
-def verify(data: VerifyRequest, request: Request):
+def verify(data: VerifyRequest):
     db = SessionLocal()
     try:
         lic = db.query(License).filter(License.key == data.key).first()
@@ -84,19 +93,16 @@ def verify(data: VerifyRequest, request: Request):
         if not lic or not lic.active:
             raise HTTPException(status_code=403, detail="invalid_key")
 
-        # первый запуск → биндим
         if lic.hwid is None:
             lic.hwid = data.hwid
             lic.nickname = data.nickname
             db.commit()
             return {"status": "binded"}
 
-        # hwid не совпал
         if lic.hwid != data.hwid:
             raise HTTPException(status_code=403, detail="hwid_mismatch")
 
         return {"status": "ok"}
-
     finally:
         db.close()
 
@@ -148,38 +154,32 @@ def list_keys():
 # ================== STATS ==================
 
 @app.post("/stats/report")
-async def report_stats(request: Request):
-    data = await request.json()
-
-    staff = data.get("staff")
-    date = data.get("date")
-    bans = int(data.get("bans", 0))
-    mutes = int(data.get("mutes", 0))
-    total = int(data.get("total", bans + mutes))
-
-    if not staff or not date:
-        raise HTTPException(status_code=422, detail="staff and date required")
+def report_stats(data: StatsRequest):
+    total = data.total if data.total is not None else data.bans + data.mutes
 
     db = SessionLocal()
     try:
         stat = (
             db.query(StaffStats)
-            .filter(StaffStats.staff == staff, StaffStats.date == date)
+            .filter(
+                StaffStats.staff == data.staff,
+                StaffStats.date == data.date
+            )
             .first()
         )
 
         if stat:
-            stat.bans = bans
-            stat.mutes = mutes
+            stat.bans = data.bans
+            stat.mutes = data.mutes
             stat.total = total
             stat.updated_at = datetime.utcnow()
         else:
             db.add(
                 StaffStats(
-                    staff=staff,
-                    date=date,
-                    bans=bans,
-                    mutes=mutes,
+                    staff=data.staff,
+                    date=data.date,
+                    bans=data.bans,
+                    mutes=data.mutes,
                     total=total
                 )
             )
