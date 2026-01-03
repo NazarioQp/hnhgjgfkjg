@@ -58,7 +58,7 @@ class Admin(Base):
     __tablename__ = "admins"
 
     user_id = Column(BigInteger, primary_key=True)
-    role = Column(String)  # "root" | "admin"
+    role = Column(String)  # "root" | "admin" | "kyrator"
 
 
 Base.metadata.create_all(bind=engine)
@@ -100,9 +100,10 @@ async def list_admins():
 async def add_admin(data: dict):
     user_id = data.get("user_id")
     role = data.get("role", "admin")
+    
+if role not in ("admin", "root", "kyrator"):
+    raise HTTPException(400, "invalid role")
 
-    if role not in ("admin", "root"):
-        raise HTTPException(400, "invalid role")
 
     db = SessionLocal()
     try:
