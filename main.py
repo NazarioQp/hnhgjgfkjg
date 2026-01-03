@@ -100,10 +100,9 @@ async def list_admins():
 async def add_admin(data: dict):
     user_id = data.get("user_id")
     role = data.get("role", "admin")
-    
-if role not in ("admin", "root", "kyrator"):
-    raise HTTPException(400, "invalid role")
 
+    if role not in ("admin", "root", "kyrator"):
+        raise HTTPException(400, "invalid role")
 
     db = SessionLocal()
     try:
@@ -283,6 +282,8 @@ async def get_stats(date: str | None = None):
         ]
     finally:
         db.close()
+
+# ================== ROOT ==================
 
 @app.get("/")
 async def root():
