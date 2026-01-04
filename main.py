@@ -267,6 +267,56 @@ async def get_stats(date: str | None = None):
     finally:
         db.close()
 
+# ================== стата ==================
+@app.post("/stats/report")
+async def report_stats(request: Request):
+    raw = await request.body()
+    if not raw:
+        return {"status": "ignored"}
+
+    try:
+        data = json.loads(raw.decode())
+    except Exception:
+        return {"status": "ignored"}
+
+    stats = data.get("current", data)
+    staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
+    date = stats.get("date")
+
+    if not date:
+        return {"status": "ignored"}
+
+    bans = safe_int(stats.get("bans"))
+    mutes = safe_int(stats.get("mutes"))
+    total = bans + mutes
+
+    db = SessionLocal()
+    try:
+        row = db.query(StaffStats).filter_by(
+            staff=staff,
+            date=date
+        ).first()
+
+        if row:
+            row.bans = bans
+            row.mutes = mutes
+            row.total = total
+            row.updated_at = datetime.utcnow()
+        else:
+            db.add(StaffStats(
+                staff=staff,
+                date=date,
+                bans=bans,
+                mutes=mutes,
+                total=total,
+            ))
+
+        db.commit()
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+
 # ================== AUTO CLEANUP LOGS (12h) ==================
 
 async def cleanup_logs_loop():
