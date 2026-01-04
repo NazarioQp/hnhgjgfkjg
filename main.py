@@ -2,6 +2,7 @@ import os
 import json
 import secrets
 import string
+import asyncio
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,8 +16,6 @@ from sqlalchemy import (
     BigInteger,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
-
-from apscheduler.schedulers.background import BackgroundScheduler
 
 # ================== DATABASE ==================
 
@@ -84,7 +83,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.5.0")
+app = FastAPI(title="StaffHelp API", version="3.5.1")
 
 # ================== UTILS ==================
 
@@ -192,7 +191,7 @@ async def log_message(data: dict):
     finally:
         db.close()
 
-# ================== VERIFY (ПРОВЕРКА КЛЮЧЕЙ) ==================
+# ================== VERIFY ==================
 
 @app.post("/verify")
 async def verify(request: Request):
@@ -224,53 +223,6 @@ async def verify(request: Request):
     finally:
         db.close()
 
-# ================== LICENSE ADMIN ==================
-
-@app.post("/admin/genkey")
-async def genkey():
-    db = SessionLocal()
-    try:
-        key = generate_key()
-        db.add(License(key=key))
-        db.commit()
-        return {"key": key}
-    finally:
-        db.close()
-
-
-@app.post("/admin/revoke")
-async def revoke(request: Request):
-    data = await request.json()
-    key = data.get("key")
-
-    db = SessionLocal()
-    try:
-        lic = db.query(License).filter_by(key=key).first()
-        if not lic:
-            raise HTTPException(404, "not found")
-        db.delete(lic)
-        db.commit()
-        return {"status": "deleted"}
-    finally:
-        db.close()
-
-
-@app.get("/admin/list")
-async def list_keys():
-    db = SessionLocal()
-    try:
-        return [
-            {
-                "key": l.key,
-                "hwid": l.hwid,
-                "nickname": l.nickname,
-                "active": l.active,
-            }
-            for l in db.query(License).all()
-        ]
-    finally:
-        db.close()
-
 # ================== STATS ==================
 
 @app.get("/admin/stats")
@@ -294,68 +246,27 @@ async def get_stats(date: str | None = None):
     finally:
         db.close()
 
-
-@app.post("/stats/report")
-async def report_stats(request: Request):
-    raw = await request.body()
-    if not raw:
-        return {"status": "ignored"}
-
-    try:
-        data = json.loads(raw.decode())
-    except Exception:
-        return {"status": "ignored"}
-
-    stats = data.get("current", data)
-    staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
-    date = stats.get("date")
-    if not date:
-        return {"status": "ignored"}
-
-    bans = safe_int(stats.get("bans"))
-    mutes = safe_int(stats.get("mutes"))
-    total = bans + mutes
-
-    db = SessionLocal()
-    try:
-        row = db.query(StaffStats).filter_by(staff=staff, date=date).first()
-        if row:
-            row.bans = bans
-            row.mutes = mutes
-            row.total = total
-            row.updated_at = datetime.utcnow()
-        else:
-            db.add(StaffStats(
-                staff=staff,
-                date=date,
-                bans=bans,
-                mutes=mutes,
-                total=total,
-            ))
-        db.commit()
-        return {"status": "ok"}
-    finally:
-        db.close()
-
 # ================== AUTO CLEANUP LOGS (12 HOURS) ==================
 
-def cleanup_old_logs():
-    db = SessionLocal()
-    try:
-        threshold = datetime.utcnow() - timedelta(hours=12)
-        deleted = (
-            db.query(MessageLog)
-            .filter(MessageLog.created_at < threshold)
-            .delete()
-        )
-        db.commit()
-        print(f"[LOG CLEANUP] deleted {deleted} rows")
-    finally:
-        db.close()
+async def cleanup_logs_loop():
+    while True:
+        await asyncio.sleep(3600)  # 1 час
+        db = SessionLocal()
+        try:
+            threshold = datetime.utcnow() - timedelta(hours=12)
+            deleted = (
+                db.query(MessageLog)
+                .filter(MessageLog.created_at < threshold)
+                .delete()
+            )
+            db.commit()
+            print(f"[LOG CLEANUP] deleted {deleted} rows")
+        finally:
+            db.close()
 
-scheduler = BackgroundScheduler(timezone="UTC")
-scheduler.add_job(cleanup_old_logs, "interval", hours=1)
-scheduler.start()
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(cleanup_logs_loop())
 
 # ================== ROOT ==================
 
