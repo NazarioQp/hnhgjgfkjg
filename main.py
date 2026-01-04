@@ -82,7 +82,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.5.0")
+app = FastAPI(title="StaffHelp API", version="3.4.0")
 
 # ================== UTILS ==================
 
@@ -155,6 +155,7 @@ async def del_admin(data: dict):
 @app.post("/admin/logs")
 async def toggle_logs(data: dict):
     enabled = data.get("enabled")
+
     if not isinstance(enabled, bool):
         raise HTTPException(400, "enabled must be boolean")
 
@@ -189,7 +190,39 @@ async def log_message(data: dict):
     finally:
         db.close()
 
-# ================== LICENSES ==================
+# ================== VERIFY (КЛЮЧИ — НЕ УРЕЗАНО) ==================
+
+@app.post("/verify")
+async def verify(request: Request):
+    data = await request.json()
+
+    key = data.get("key")
+    hwid = data.get("hwid")
+    nickname = data.get("nickname")
+
+    if not key or not hwid:
+        raise HTTPException(400, "invalid_request")
+
+    db = SessionLocal()
+    try:
+        lic = db.query(License).filter_by(key=key).first()
+        if not lic or not lic.active:
+            raise HTTPException(403, "invalid_key")
+
+        if lic.hwid is None:
+            lic.hwid = hwid
+            lic.nickname = nickname
+            db.commit()
+            return {"status": "binded"}
+
+        if lic.hwid != hwid:
+            raise HTTPException(403, "hwid_mismatch")
+
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+# ================== LICENSE ADMIN ==================
 
 @app.post("/admin/genkey")
 async def genkey():
@@ -279,6 +312,7 @@ async def report_stats(request: Request):
 
     bans = safe_int(stats.get("bans"))
     mutes = safe_int(stats.get("mutes"))
+    total = bans + mutes
 
     db = SessionLocal()
     try:
@@ -286,7 +320,7 @@ async def report_stats(request: Request):
         if row:
             row.bans = bans
             row.mutes = mutes
-            row.total = bans + mutes
+            row.total = total
             row.updated_at = datetime.utcnow()
         else:
             db.add(StaffStats(
@@ -294,12 +328,14 @@ async def report_stats(request: Request):
                 date=date,
                 bans=bans,
                 mutes=mutes,
-                total=bans + mutes,
+                total=total,
             ))
         db.commit()
         return {"status": "ok"}
     finally:
         db.close()
+
+# ================== ROOT ==================
 
 @app.get("/")
 async def root():
