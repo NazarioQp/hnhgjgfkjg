@@ -83,7 +83,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.6.0")
+app = FastAPI(title="StaffHelp API", version="3.6.1")
 
 # ================== UTILS ==================
 
@@ -180,6 +180,41 @@ async def list_keys():
             }
             for l in db.query(License).all()
         ]
+    finally:
+        db.close()
+
+# ================== VERIFY ==================
+
+@app.post("/verify")
+async def verify(request: Request):
+    data = await request.json()
+
+    key = data.get("key")
+    hwid = data.get("hwid")
+    nickname = data.get("nickname")
+
+    if not key or not hwid:
+        raise HTTPException(400, "invalid_request")
+
+    db = SessionLocal()
+    try:
+        lic = db.query(License).filter_by(key=key).first()
+
+        if not lic or not lic.active:
+            raise HTTPException(403, "invalid_key")
+
+        # первый запуск — бинд HWID
+        if lic.hwid is None:
+            lic.hwid = hwid
+            lic.nickname = nickname
+            db.commit()
+            return {"status": "binded"}
+
+        # повторная проверка
+        if lic.hwid != hwid:
+            raise HTTPException(403, "hwid_mismatch")
+
+        return {"status": "ok"}
     finally:
         db.close()
 
