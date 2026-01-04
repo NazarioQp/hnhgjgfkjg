@@ -190,7 +190,7 @@ async def log_message(data: dict):
     finally:
         db.close()
 
-# ================== VERIFY (КЛЮЧИ — НЕ УРЕЗАНО) ==================
+# ================== VERIFY (ПРОВЕРКА КЛЮЧЕЙ) ==================
 
 @app.post("/verify")
 async def verify(request: Request):
