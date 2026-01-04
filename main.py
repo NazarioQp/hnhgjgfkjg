@@ -188,12 +188,9 @@ async def revoke(request: Request):
         lic = db.query(License).filter_by(key=key).first()
         if not lic:
             raise HTTPException(404, "not found")
-
-        # 🔴 ВАЖНОЕ ИЗМЕНЕНИЕ: деактивация вместо удаления
-        lic.active = False
+        db.delete(lic)
         db.commit()
-
-        return {"status": "revoked"}
+        return {"status": "deleted"}
     finally:
         db.close()
 
