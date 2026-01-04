@@ -83,7 +83,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.5.1")
+app = FastAPI(title="StaffHelp API", version="3.6.0")
 
 # ================== UTILS ==================
 
@@ -104,7 +104,7 @@ def logs_enabled(db):
     cfg = db.query(LogConfig).get(1)
     return bool(cfg and cfg.enabled)
 
-# ================== ADMINS API ==================
+# ================== ADMINS ==================
 
 @app.get("/admin/admins")
 async def list_admins():
@@ -117,18 +117,9 @@ async def list_admins():
 
 @app.post("/admin/addadmin")
 async def add_admin(data: dict):
-    user_id = data.get("user_id")
-    role = data.get("role", "admin")
-
-    if role not in ("admin", "root", "kyrator"):
-        raise HTTPException(400, "invalid role")
-
     db = SessionLocal()
     try:
-        if db.query(Admin).filter_by(user_id=user_id).first():
-            raise HTTPException(409, "already exists")
-
-        db.add(Admin(user_id=user_id, role=role))
+        db.add(Admin(user_id=data["user_id"], role=data["role"]))
         db.commit()
         return {"status": "ok"}
     finally:
@@ -137,17 +128,58 @@ async def add_admin(data: dict):
 
 @app.post("/admin/deladmin")
 async def del_admin(data: dict):
-    user_id = data.get("user_id")
-
     db = SessionLocal()
     try:
-        adm = db.query(Admin).filter_by(user_id=user_id).first()
+        adm = db.query(Admin).filter_by(user_id=data["user_id"]).first()
         if not adm:
             raise HTTPException(404, "not found")
-
         db.delete(adm)
         db.commit()
         return {"status": "deleted"}
+    finally:
+        db.close()
+
+# ================== LICENSES ==================
+
+@app.post("/admin/genkey")
+async def genkey():
+    db = SessionLocal()
+    try:
+        key = generate_key()
+        db.add(License(key=key))
+        db.commit()
+        return {"key": key}
+    finally:
+        db.close()
+
+
+@app.post("/admin/revoke")
+async def revoke(data: dict):
+    db = SessionLocal()
+    try:
+        lic = db.query(License).filter_by(key=data["key"]).first()
+        if not lic:
+            raise HTTPException(404, "not found")
+        db.delete(lic)
+        db.commit()
+        return {"status": "deleted"}
+    finally:
+        db.close()
+
+
+@app.get("/admin/list")
+async def list_keys():
+    db = SessionLocal()
+    try:
+        return [
+            {
+                "key": l.key,
+                "hwid": l.hwid,
+                "nickname": l.nickname,
+                "active": l.active,
+            }
+            for l in db.query(License).all()
+        ]
     finally:
         db.close()
 
@@ -155,19 +187,11 @@ async def del_admin(data: dict):
 
 @app.post("/admin/logs")
 async def toggle_logs(data: dict):
-    enabled = data.get("enabled")
-
-    if not isinstance(enabled, bool):
-        raise HTTPException(400, "enabled must be boolean")
-
     db = SessionLocal()
     try:
-        cfg = db.query(LogConfig).get(1)
-        if not cfg:
-            cfg = LogConfig(enabled=enabled)
-            db.add(cfg)
-        else:
-            cfg.enabled = enabled
+        cfg = db.query(LogConfig).get(1) or LogConfig(enabled=data["enabled"])
+        cfg.enabled = data["enabled"]
+        db.add(cfg)
         db.commit()
         return {"enabled": cfg.enabled}
     finally:
@@ -180,45 +204,8 @@ async def log_message(data: dict):
     try:
         if not logs_enabled(db):
             return {"status": "disabled"}
-
-        db.add(MessageLog(
-            user_id=data["user_id"],
-            role=data["role"],
-            text=data["text"],
-        ))
+        db.add(MessageLog(**data))
         db.commit()
-        return {"status": "ok"}
-    finally:
-        db.close()
-
-# ================== VERIFY ==================
-
-@app.post("/verify")
-async def verify(request: Request):
-    data = await request.json()
-
-    key = data.get("key")
-    hwid = data.get("hwid")
-    nickname = data.get("nickname")
-
-    if not key or not hwid:
-        raise HTTPException(400, "invalid_request")
-
-    db = SessionLocal()
-    try:
-        lic = db.query(License).filter_by(key=key).first()
-        if not lic or not lic.active:
-            raise HTTPException(403, "invalid_key")
-
-        if lic.hwid is None:
-            lic.hwid = hwid
-            lic.nickname = nickname
-            db.commit()
-            return {"status": "binded"}
-
-        if lic.hwid != hwid:
-            raise HTTPException(403, "hwid_mismatch")
-
         return {"status": "ok"}
     finally:
         db.close()
@@ -232,7 +219,6 @@ async def get_stats(date: str | None = None):
         q = db.query(StaffStats)
         if date:
             q = q.filter_by(date=date)
-
         return [
             {
                 "staff": s.staff,
@@ -241,31 +227,28 @@ async def get_stats(date: str | None = None):
                 "mutes": s.mutes,
                 "total": s.total,
             }
-            for s in q.order_by(StaffStats.total.desc()).all()
+            for s in q.all()
         ]
     finally:
         db.close()
 
-# ================== AUTO CLEANUP LOGS (12 HOURS) ==================
+# ================== AUTO CLEANUP LOGS (12h) ==================
 
 async def cleanup_logs_loop():
     while True:
-        await asyncio.sleep(3600)  # 1 час
+        await asyncio.sleep(3600)
         db = SessionLocal()
         try:
             threshold = datetime.utcnow() - timedelta(hours=12)
-            deleted = (
-                db.query(MessageLog)
-                .filter(MessageLog.created_at < threshold)
-                .delete()
-            )
+            db.query(MessageLog).filter(
+                MessageLog.created_at < threshold
+            ).delete()
             db.commit()
-            print(f"[LOG CLEANUP] deleted {deleted} rows")
         finally:
             db.close()
 
 @app.on_event("startup")
-async def startup_event():
+async def startup():
     asyncio.create_task(cleanup_logs_loop())
 
 # ================== ROOT ==================
