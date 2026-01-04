@@ -58,14 +58,31 @@ class Admin(Base):
     __tablename__ = "admins"
 
     user_id = Column(BigInteger, primary_key=True)
-    role = Column(String)  # "root" | "admin" | "kyrator"
+    role = Column(String)  # root | admin | kyrator
+
+
+class LogConfig(Base):
+    __tablename__ = "log_config"
+
+    id = Column(Integer, primary_key=True, default=1)
+    enabled = Column(Boolean, default=False)
+
+
+class MessageLog(Base):
+    __tablename__ = "message_logs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(BigInteger, index=True)
+    role = Column(String)
+    text = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.3.0")
+app = FastAPI(title="StaffHelp API", version="3.4.0")
 
 # ================== UTILS ==================
 
@@ -82,16 +99,17 @@ def safe_int(v, d=0):
     except Exception:
         return d
 
+def logs_enabled(db):
+    cfg = db.query(LogConfig).get(1)
+    return bool(cfg and cfg.enabled)
+
 # ================== ADMINS API ==================
 
 @app.get("/admin/admins")
 async def list_admins():
     db = SessionLocal()
     try:
-        return [
-            {"user_id": a.user_id, "role": a.role}
-            for a in db.query(Admin).all()
-        ]
+        return [{"user_id": a.user_id, "role": a.role} for a in db.query(Admin).all()]
     finally:
         db.close()
 
@@ -129,6 +147,46 @@ async def del_admin(data: dict):
         db.delete(adm)
         db.commit()
         return {"status": "deleted"}
+    finally:
+        db.close()
+
+# ================== LOGGING ==================
+
+@app.post("/admin/logs")
+async def toggle_logs(data: dict):
+    enabled = data.get("enabled")
+
+    if not isinstance(enabled, bool):
+        raise HTTPException(400, "enabled must be boolean")
+
+    db = SessionLocal()
+    try:
+        cfg = db.query(LogConfig).get(1)
+        if not cfg:
+            cfg = LogConfig(enabled=enabled)
+            db.add(cfg)
+        else:
+            cfg.enabled = enabled
+        db.commit()
+        return {"enabled": cfg.enabled}
+    finally:
+        db.close()
+
+
+@app.post("/admin/log_message")
+async def log_message(data: dict):
+    db = SessionLocal()
+    try:
+        if not logs_enabled(db):
+            return {"status": "disabled"}
+
+        db.add(MessageLog(
+            user_id=data["user_id"],
+            role=data["role"],
+            text=data["text"],
+        ))
+        db.commit()
+        return {"status": "ok"}
     finally:
         db.close()
 
@@ -219,27 +277,20 @@ async def report_stats(request: Request):
     if not raw:
         return {"status": "ignored"}
 
-    data = None
     try:
         data = json.loads(raw.decode())
     except Exception:
-        text = raw.decode(errors="ignore")
-        s, e = text.find("{"), text.rfind("}")
-        if s != -1 and e != -1:
-            data = json.loads(text[s:e + 1])
-
-    if not isinstance(data, dict):
         return {"status": "ignored"}
 
     stats = data.get("current", data)
     staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
-    date = stats.get("date") or stats.get("Дата")
+    date = stats.get("date")
     if not date:
         return {"status": "ignored"}
 
-    bans = safe_int(stats.get("bans") or stats.get("Банов"))
-    mutes = safe_int(stats.get("mutes") or stats.get("Мутов"))
-    total = safe_int(stats.get("total") or stats.get("Всего"), bans + mutes)
+    bans = safe_int(stats.get("bans"))
+    mutes = safe_int(stats.get("mutes"))
+    total = bans + mutes
 
     db = SessionLocal()
     try:
@@ -259,27 +310,6 @@ async def report_stats(request: Request):
             ))
         db.commit()
         return {"status": "ok"}
-    finally:
-        db.close()
-
-
-@app.get("/admin/stats")
-async def get_stats(date: str | None = None):
-    db = SessionLocal()
-    try:
-        q = db.query(StaffStats)
-        if date:
-            q = q.filter_by(date=date)
-        return [
-            {
-                "staff": s.staff,
-                "date": s.date,
-                "bans": s.bans,
-                "mutes": s.mutes,
-                "total": s.total,
-            }
-            for s in q.order_by(StaffStats.total.desc()).all()
-        ]
     finally:
         db.close()
 
