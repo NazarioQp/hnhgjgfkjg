@@ -2,7 +2,7 @@ import os
 import json
 import secrets
 import string
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Request
 from sqlalchemy import (
@@ -15,6 +15,8 @@ from sqlalchemy import (
     BigInteger,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # ================== DATABASE ==================
 
@@ -82,7 +84,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.4.0")
+app = FastAPI(title="StaffHelp API", version="3.5.0")
 
 # ================== UTILS ==================
 
@@ -334,6 +336,26 @@ async def report_stats(request: Request):
         return {"status": "ok"}
     finally:
         db.close()
+
+# ================== AUTO CLEANUP LOGS (12 HOURS) ==================
+
+def cleanup_old_logs():
+    db = SessionLocal()
+    try:
+        threshold = datetime.utcnow() - timedelta(hours=12)
+        deleted = (
+            db.query(MessageLog)
+            .filter(MessageLog.created_at < threshold)
+            .delete()
+        )
+        db.commit()
+        print(f"[LOG CLEANUP] deleted {deleted} rows")
+    finally:
+        db.close()
+
+scheduler = BackgroundScheduler(timezone="UTC")
+scheduler.add_job(cleanup_old_logs, "interval", hours=1)
+scheduler.start()
 
 # ================== ROOT ==================
 
