@@ -59,7 +59,7 @@ class Admin(Base):
     __tablename__ = "admins"
 
     user_id = Column(BigInteger, primary_key=True)
-    role = Column(String)  # root | admin | kyrator
+    role = Column(String)
 
 
 class LogConfig(Base):
@@ -76,14 +76,21 @@ class MessageLog(Base):
     user_id = Column(BigInteger, index=True)
     role = Column(String)
     text = Column(String)
+    chat_id = Column(BigInteger, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LogChatBlacklist(Base):
+    __tablename__ = "log_chat_blacklist"
+
+    chat_id = Column(BigInteger, primary_key=True)
 
 
 Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.6.1")
+app = FastAPI(title="StaffHelp API", version="3.8.0")
 
 # ================== UTILS ==================
 
@@ -103,6 +110,9 @@ def safe_int(v, d=0):
 def logs_enabled(db):
     cfg = db.query(LogConfig).get(1)
     return bool(cfg and cfg.enabled)
+
+def chat_blacklisted(db, chat_id: int) -> bool:
+    return db.query(LogChatBlacklist).filter_by(chat_id=chat_id).first() is not None
 
 # ================== ADMINS ==================
 
@@ -199,18 +209,15 @@ async def verify(request: Request):
     db = SessionLocal()
     try:
         lic = db.query(License).filter_by(key=key).first()
-
         if not lic or not lic.active:
             raise HTTPException(403, "invalid_key")
 
-        # первый запуск — бинд HWID
         if lic.hwid is None:
             lic.hwid = hwid
             lic.nickname = nickname
             db.commit()
             return {"status": "binded"}
 
-        # повторная проверка
         if lic.hwid != hwid:
             raise HTTPException(403, "hwid_mismatch")
 
@@ -233,12 +240,37 @@ async def toggle_logs(data: dict):
         db.close()
 
 
+@app.post("/admin/logs/blacklist")
+async def toggle_log_blacklist(data: dict):
+    chat_id = data.get("chat_id")
+    if not isinstance(chat_id, int):
+        raise HTTPException(400, "chat_id required")
+
+    db = SessionLocal()
+    try:
+        row = db.query(LogChatBlacklist).filter_by(chat_id=chat_id).first()
+        if row:
+            db.delete(row)
+            db.commit()
+            return {"status": "removed"}
+        else:
+            db.add(LogChatBlacklist(chat_id=chat_id))
+            db.commit()
+            return {"status": "added"}
+    finally:
+        db.close()
+
+
 @app.post("/admin/log_message")
 async def log_message(data: dict):
     db = SessionLocal()
     try:
         if not logs_enabled(db):
             return {"status": "disabled"}
+
+        if chat_blacklisted(db, data["chat_id"]):
+            return {"status": "blacklisted"}
+
         db.add(MessageLog(**data))
         db.commit()
         return {"status": "ok"}
@@ -267,7 +299,7 @@ async def get_stats(date: str | None = None):
     finally:
         db.close()
 
-# ================== стата ==================
+
 @app.post("/stats/report")
 async def report_stats(request: Request):
     raw = await request.body()
@@ -292,11 +324,7 @@ async def report_stats(request: Request):
 
     db = SessionLocal()
     try:
-        row = db.query(StaffStats).filter_by(
-            staff=staff,
-            date=date
-        ).first()
-
+        row = db.query(StaffStats).filter_by(staff=staff, date=date).first()
         if row:
             row.bans = bans
             row.mutes = mutes
@@ -310,14 +338,12 @@ async def report_stats(request: Request):
                 mutes=mutes,
                 total=total,
             ))
-
         db.commit()
         return {"status": "ok"}
     finally:
         db.close()
 
-
-# ================== AUTO CLEANUP LOGS (12h) ==================
+# ================== AUTO CLEANUP LOGS ==================
 
 async def cleanup_logs_loop():
     while True:
@@ -335,8 +361,6 @@ async def cleanup_logs_loop():
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(cleanup_logs_loop())
-
-# ================== ROOT ==================
 
 @app.get("/")
 async def root():
