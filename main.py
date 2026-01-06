@@ -4,6 +4,7 @@ import secrets
 import string
 import asyncio
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
 from sqlalchemy import (
@@ -16,6 +17,16 @@ from sqlalchemy import (
     BigInteger,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+# ================== TIMEZONE ==================
+
+MSK = ZoneInfo("Europe/Moscow")
+
+def now_msk() -> datetime:
+    return datetime.now(MSK)
+
+def today_msk() -> str:
+    return now_msk().strftime("%Y-%m-%d")
 
 # ================== DATABASE ==================
 
@@ -52,7 +63,7 @@ class StaffStats(Base):
     bans = Column(Integer, default=0)
     mutes = Column(Integer, default=0)
     total = Column(Integer, default=0)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: now_msk())
 
 
 class Admin(Base):
@@ -77,7 +88,7 @@ class MessageLog(Base):
     role = Column(String)
     text = Column(String)
     chat_id = Column(BigInteger, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: now_msk())
 
 
 class LogChatBlacklist(Base):
@@ -90,7 +101,7 @@ Base.metadata.create_all(bind=engine)
 
 # ================== FASTAPI ==================
 
-app = FastAPI(title="StaffHelp API", version="3.8.0")
+app = FastAPI(title="StaffHelp API", version="3.9.0")
 
 # ================== UTILS ==================
 
@@ -113,6 +124,17 @@ def logs_enabled(db):
 
 def chat_blacklisted(db, chat_id: int) -> bool:
     return db.query(LogChatBlacklist).filter_by(chat_id=chat_id).first() is not None
+
+# ================== TIME API ==================
+
+@app.get("/time")
+async def server_time():
+    now = now_msk()
+    return {
+        "date": now.strftime("%Y-%m-%d"),
+        "datetime": now.isoformat(),
+        "timezone": "Europe/Moscow"
+    }
 
 # ================== ADMINS ==================
 
@@ -240,27 +262,6 @@ async def toggle_logs(data: dict):
         db.close()
 
 
-@app.post("/admin/logs/blacklist")
-async def toggle_log_blacklist(data: dict):
-    chat_id = data.get("chat_id")
-    if not isinstance(chat_id, int):
-        raise HTTPException(400, "chat_id required")
-
-    db = SessionLocal()
-    try:
-        row = db.query(LogChatBlacklist).filter_by(chat_id=chat_id).first()
-        if row:
-            db.delete(row)
-            db.commit()
-            return {"status": "removed"}
-        else:
-            db.add(LogChatBlacklist(chat_id=chat_id))
-            db.commit()
-            return {"status": "added"}
-    finally:
-        db.close()
-
-
 @app.post("/admin/log_message")
 async def log_message(data: dict):
     db = SessionLocal()
@@ -313,10 +314,9 @@ async def report_stats(request: Request):
 
     stats = data.get("current", data)
     staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
-    date = stats.get("date")
 
-    if not date:
-        return {"status": "ignored"}
+    # 🔒 дата ВСЕГДА серверная (МСК)
+    date = today_msk()
 
     bans = safe_int(stats.get("bans"))
     mutes = safe_int(stats.get("mutes"))
@@ -329,7 +329,7 @@ async def report_stats(request: Request):
             row.bans = bans
             row.mutes = mutes
             row.total = total
-            row.updated_at = datetime.utcnow()
+            row.updated_at = now_msk()
         else:
             db.add(StaffStats(
                 staff=staff,
@@ -350,7 +350,7 @@ async def cleanup_logs_loop():
         await asyncio.sleep(3600)
         db = SessionLocal()
         try:
-            threshold = datetime.utcnow() - timedelta(hours=12)
+            threshold = now_msk() - timedelta(hours=12)
             db.query(MessageLog).filter(
                 MessageLog.created_at < threshold
             ).delete()
