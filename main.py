@@ -281,12 +281,17 @@ async def log_message(data: dict):
 # ================== STATS ==================
 
 @app.get("/admin/stats")
-async def get_stats(date: str | None = None):
+async def get_stats(date: str | None = None, staff: str | None = None):
     db = SessionLocal()
     try:
         q = db.query(StaffStats)
+
         if date:
             q = q.filter_by(date=date)
+
+        if staff:
+            q = q.filter(StaffStats.staff.ilike(f"%{staff}%"))
+
         return [
             {
                 "staff": s.staff,
@@ -299,7 +304,6 @@ async def get_stats(date: str | None = None):
         ]
     finally:
         db.close()
-
 
 @app.post("/stats/report")
 async def report_stats(request: Request):
