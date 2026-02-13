@@ -274,7 +274,7 @@ async def list_keys(_: bool = Depends(require_api_key)):
 # ================== VERIFY ==================
 
 @app.post("/verify")
-async def verify(request: Request, _: bool = Depends(require_api_key)):
+async def verify(request: Request):
 
     data = await request.json()
 
@@ -389,7 +389,7 @@ async def get_stats(date: str | None = None, staff: str | None = None, _: bool =
 
 
 @app.post("/stats/report")
-async def report_stats(request: Request, _: bool = Depends(require_api_key)):
+async def report_stats(request: Request):
 
     raw = await request.body()
 
@@ -404,6 +404,17 @@ async def report_stats(request: Request, _: bool = Depends(require_api_key)):
     stats = data.get("current", data)
 
     staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
+
+    license_key = data.get("license") or data.get("key")
+
+if not license_key:
+    return {"status": "ignored"}
+
+lic = db.query(License).filter_by(key=license_key, active=True).first()
+
+if not lic:
+    return {"status": "invalid_license"}
+
 
     date = today_msk()
 
