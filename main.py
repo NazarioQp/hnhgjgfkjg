@@ -407,25 +407,27 @@ async def report_stats(request: Request):
 
     license_key = data.get("license") or data.get("key")
 
-if not license_key:
-    return {"status": "ignored"}
-
-lic = db.query(License).filter_by(key=license_key, active=True).first()
-
-if not lic:
-    return {"status": "invalid_license"}
-
-
-    date = today_msk()
-
-    bans = safe_int(stats.get("bans"))
-    mutes = safe_int(stats.get("mutes"))
-
-    total = bans + mutes
+    if not license_key:
+        return {"status": "ignored"}
 
     db = SessionLocal()
 
     try:
+
+        lic = db.query(License).filter_by(
+            key=license_key,
+            active=True
+        ).first()
+
+        if not lic:
+            return {"status": "invalid_license"}
+
+        date = today_msk()
+
+        bans = safe_int(stats.get("bans"))
+        mutes = safe_int(stats.get("mutes"))
+
+        total = bans + mutes
 
         row = db.query(StaffStats).filter_by(
             staff=staff,
@@ -455,7 +457,7 @@ if not lic:
 
     finally:
         db.close()
-
+        
 # ================== AUTO CLEANUP LOGS ==================
 
 async def cleanup_logs_loop():
