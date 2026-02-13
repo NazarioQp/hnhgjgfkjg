@@ -114,6 +114,47 @@ class LogChatBlacklist(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# ================== AUTO MIGRATION ==================
+
+from sqlalchemy import inspect, text
+
+def auto_migrate():
+
+    inspector = inspect(engine)
+
+    with engine.connect() as conn:
+
+        # message_logs.chat_id
+        if "message_logs" in inspector.get_table_names():
+
+            columns = [c["name"] for c in inspector.get_columns("message_logs")]
+
+            if "chat_id" not in columns:
+
+                print("AUTO MIGRATE: adding message_logs.chat_id")
+
+                conn.execute(text(
+                    "ALTER TABLE message_logs ADD COLUMN chat_id BIGINT"
+                ))
+
+                conn.commit()
+
+        # message_logs.created_at
+        if "message_logs" in inspector.get_table_names():
+
+            columns = [c["name"] for c in inspector.get_columns("message_logs")]
+
+            if "created_at" not in columns:
+
+                print("AUTO MIGRATE: adding message_logs.created_at")
+
+                conn.execute(text(
+                    "ALTER TABLE message_logs ADD COLUMN created_at TIMESTAMP"
+                ))
+
+                conn.commit()
+
+
 # ================== FASTAPI ==================
 
 app = FastAPI(title="StaffHelp API", version="4.0.0-secure")
