@@ -470,6 +470,9 @@ async def cleanup_logs_loop():
 
 @app.on_event("startup")
 async def startup():
+
+    auto_migrate()
+
     asyncio.create_task(cleanup_logs_loop())
 
 @app.get("/")
