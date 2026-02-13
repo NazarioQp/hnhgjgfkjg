@@ -405,10 +405,19 @@ async def report_stats(request: Request):
 
     staff = data.get("staffNickname") or data.get("staff") or "UNKNOWN"
 
-    license_key = data.get("license") or data.get("key")
+license_key = (
+    data.get("license")
+    or data.get("key")
+    or data.get("licenseKey")
+    or data.get("licence")
+    or data.get("lic")
+)
 
-    if not license_key:
-        return {"status": "ignored"}
+print("STATS LICENSE RECEIVED:", license_key)
+
+if not license_key:
+    return {"status": "ignored"}
+
 
     db = SessionLocal()
 
