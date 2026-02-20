@@ -368,4 +368,4 @@ async def startup():
 
 @app.get("/")
 async def root():
-    return {"status": "okk"}
+    return {"status": "ok"}
